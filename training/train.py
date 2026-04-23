@@ -84,10 +84,27 @@ def main():
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
+    # Detect mixed-precision capability of the visible GPU.
+    # Ampere+ (compute capability >= 8.0): bf16. Earlier (V100/Turing): fp16.
+    # DGX-1 / DGX-2 boxes ship with V100 (Volta, cc 7.0) and have NO bf16.
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    use_fp16 = torch.cuda.is_available() and not use_bf16
+    compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    if torch.cuda.is_available():
+        cap = torch.cuda.get_device_capability(0)
+        logger.info(
+            f"GPU={torch.cuda.get_device_name(0)} cc={cap[0]}.{cap[1]} "
+            f"bf16={use_bf16} fp16={use_fp16}"
+        )
+
     try:
         from unsloth import FastLanguageModel
         model, tokenizer = FastLanguageModel.from_pretrained(
-            args.model_name, load_in_4bit=True, max_seq_length=args.max_seq_length)
+            args.model_name,
+            load_in_4bit=True,
+            max_seq_length=args.max_seq_length,
+            dtype=compute_dtype,
+        )
         model = FastLanguageModel.get_peft_model(
             model, r=args.lora_r,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
@@ -98,11 +115,19 @@ def main():
         from peft import get_peft_model, LoraConfig
         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_name, torch_dtype=torch.float16, device_map="auto")
+            args.model_name, torch_dtype=compute_dtype, device_map="auto")
         model = get_peft_model(model, LoraConfig(
             r=args.lora_r, lora_alpha=args.lora_alpha,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
             lora_dropout=0.0, bias="none"))
+
+    # Make sure the tokenizer has a pad token (Qwen2.5 doesn't ship one).
+    if tokenizer.pad_token_id is None:
+        if tokenizer.eos_token_id is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        else:
+            tokenizer.add_special_tokens({"pad_token": "<|PAD_TOKEN|>"})
+            model.resize_token_embeddings(len(tokenizer))
 
     dataset = build_scenario_dataset(args.env_url, 200, args.seed)
 
@@ -114,6 +139,7 @@ def main():
         save_steps=args.save_steps, logging_steps=10,
         max_prompt_length=1024, max_completion_length=512,
         temperature=args.temperature, beta=args.beta,
+        bf16=use_bf16, fp16=use_fp16,
         report_to=args.report_to if args.report_to != "none" else None,
         seed=args.seed)
 
