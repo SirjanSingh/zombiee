@@ -86,16 +86,27 @@ def main():
 
     # Detect mixed-precision capability of the visible GPU.
     # Ampere+ (compute capability >= 8.0): bf16. Earlier (V100/Turing): fp16.
-    # DGX-1 / DGX-2 boxes ship with V100 (Volta, cc 7.0) and have NO bf16.
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-    use_fp16 = torch.cuda.is_available() and not use_bf16
+    # DGX-1 / DGX-2 boxes ship with V100 (Volta, cc 7.0) and have NO native bf16.
+    #
+    # IMPORTANT: torch.cuda.is_bf16_supported() defaults to
+    # including_emulation=True since torch 2.4, so it returns True even on V100
+    # (where bf16 is silently emulated on CPU). transformers'
+    # is_torch_bf16_gpu_available() does the strict compute-capability check
+    # and returns False — so passing bf16=True trips the TrainingArguments
+    # validator. We must mirror the strict check here.
+    cuda_ok = torch.cuda.is_available()
+    cap = torch.cuda.get_device_capability(0) if cuda_ok else (0, 0)
+    cuda_major = int(torch.version.cuda.split(".")[0]) if torch.version.cuda else 0
+    use_bf16 = cuda_ok and cap[0] >= 8 and cuda_major >= 11
+    use_fp16 = cuda_ok and not use_bf16
     compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
-    if torch.cuda.is_available():
-        cap = torch.cuda.get_device_capability(0)
+    if cuda_ok:
         logger.info(
             f"GPU={torch.cuda.get_device_name(0)} cc={cap[0]}.{cap[1]} "
-            f"bf16={use_bf16} fp16={use_fp16}"
+            f"cuda={torch.version.cuda} bf16={use_bf16} fp16={use_fp16}"
         )
+    else:
+        logger.warning("CUDA not available — training will fall back to CPU.")
 
     try:
         from unsloth import FastLanguageModel
@@ -140,8 +151,15 @@ def main():
         max_prompt_length=1024, max_completion_length=512,
         temperature=args.temperature, beta=args.beta,
         bf16=use_bf16, fp16=use_fp16,
+        bf16_full_eval=use_bf16, fp16_full_eval=use_fp16,
+        tf32=use_bf16,  # TF32 is also Ampere+ only
         report_to=args.report_to if args.report_to != "none" else None,
         seed=args.seed)
+    logger.info(
+        f"GRPOConfig precision: bf16={config.bf16} fp16={config.fp16} "
+        f"bf16_full_eval={config.bf16_full_eval} fp16_full_eval={config.fp16_full_eval} "
+        f"tf32={config.tf32}"
+    )
 
     trainer = GRPOTrainer(
         model=model, args=config,
