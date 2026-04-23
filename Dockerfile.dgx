@@ -32,9 +32,24 @@ RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
     "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
 
+# Pin torchao to 0.7.0 — last release compatible with torch 2.5.x.
+# Newer torchao (>=0.8) references torch.int1 (only present in torch 2.6+),
+# and transformers/quantizers/auto.py imports torchao eagerly at module load,
+# breaking `import unsloth` / `import transformers` with AttributeError.
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "torchao==0.7.0"
+
+# Sanity-check the import chain so the build fails fast if anything regresses.
+RUN python -c "import torch, torchao, transformers, unsloth; \
+print('torch', torch.__version__); \
+print('torchao', torchao.__version__); \
+print('transformers', transformers.__version__); \
+print('unsloth ok')"
+
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    wandb "matplotlib>=3.8"
+    wandb "matplotlib>=3.8" tensorboard
 
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
