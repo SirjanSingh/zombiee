@@ -40,12 +40,18 @@ RUN pip install --no-cache-dir --force-reinstall --no-deps \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
     "torchao==0.7.0"
 
-# Sanity-check the import chain so the build fails fast if anything regresses.
-RUN python -c "import torch, torchao, transformers, unsloth; \
+# Sanity-check the import chain so the build fails fast if torchao regresses.
+# We deliberately skip `import unsloth` here — unsloth_zoo runs a CUDA-availability
+# probe at import time, and `docker build` has no GPU exposed (only `docker run --gpus`).
+# The real regression we are guarding against is transformers/quantizers/auto.py
+# eagerly importing torchao and hitting `torch.int1`, so we exercise that path.
+RUN python -c "import torch, torchao, transformers; \
+from transformers.processing_utils import Unpack; \
+from transformers.quantizers.auto import AutoHfQuantizer; \
 print('torch', torch.__version__); \
 print('torchao', torchao.__version__); \
 print('transformers', transformers.__version__); \
-print('unsloth ok')"
+print('quantizer import chain ok')"
 
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
