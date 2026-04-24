@@ -233,7 +233,11 @@ def main():
         try:
             # Eagerly import the submodule unsloth_zoo touches via inspect — in
             # torch 2.4 `import torch` doesn't pull in torch._inductor.config.
-            import torch._inductor.config  # noqa: F401
+            # Use importlib so we don't create a local `torch` binding in this
+            # function (Python treats `import torch.X` as `torch = ...` at compile
+            # time, which shadows the module-level torch everywhere in main()).
+            import importlib
+            importlib.import_module("torch._inductor.config")
             from unsloth import FastLanguageModel
             model, tokenizer = FastLanguageModel.from_pretrained(
                 args.model_name,
