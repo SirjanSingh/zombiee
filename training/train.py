@@ -176,6 +176,29 @@ def main():
         f"tf32={config.tf32}"
     )
 
+    # TRL >= 0.15 GRPOTrainer.__init__ does
+    #   model.warnings_issued["estimate_tokens"] = True
+    # `warnings_issued` is a dict normally set by transformers.PreTrainedModel
+    # __init__, but the unsloth fast-load path bypasses that init step, and
+    # PEFT's __getattr__ delegation chain (PeftModel -> LoraModel ->
+    # Qwen2ForCausalLM) then raises AttributeError. Seed the attribute on
+    # every wrapper in the chain so the trainer's lookup succeeds regardless
+    # of which level it lands on.
+    def _seed_warnings_issued(m, depth=0):
+        if m is None or depth > 6:
+            return
+        try:
+            if not isinstance(getattr(m, "warnings_issued", None), dict):
+                m.warnings_issued = {}
+        except Exception:
+            pass
+        for attr in ("base_model", "model"):
+            inner = getattr(m, attr, None)
+            if inner is not None and inner is not m:
+                _seed_warnings_issued(inner, depth + 1)
+
+    _seed_warnings_issued(model)
+
     trainer = GRPOTrainer(
         model=model, args=config,
         reward_funcs=[create_reward_fn(args.env_url)],
