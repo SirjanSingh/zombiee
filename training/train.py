@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import random
 
 import torch
@@ -26,7 +27,7 @@ def parse_args():
     p.add_argument("--max-steps", type=int, default=4000)
     p.add_argument("--save-steps", type=int, default=500)
     p.add_argument("--lr", type=float, default=1e-5)
-    p.add_argument("--num-generations", type=int, default=8)
+    p.add_argument("--num-generations", type=int, default=4)
     p.add_argument("--output-dir", default="./lora_v1")
     p.add_argument("--lora-r", type=int, default=16)
     p.add_argument("--lora-alpha", type=int, default=32)
@@ -184,6 +185,9 @@ def main():
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
+    # Reduce CUDA memory fragmentation on shared GPUs.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     # Detect mixed-precision capability of the visible GPU.
     # Ampere+ (compute capability >= 8.0): bf16. Earlier (V100/Turing): fp16.
     # DGX-1 / DGX-2 boxes ship with V100 (Volta, cc 7.0) and have NO native bf16.
@@ -216,30 +220,59 @@ def main():
     # Qwen2.5-3B-4bit is ~2 GB; a V100-32GB has plenty of room.
     device_map = {"": 0} if cuda_ok else "cpu"
 
-    try:
-        from unsloth import FastLanguageModel
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            args.model_name,
-            load_in_4bit=True,
-            max_seq_length=args.max_seq_length,
-            dtype=compute_dtype,
-            device_map=device_map,
-        )
-        model = FastLanguageModel.get_peft_model(
-            model, r=args.lora_r,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-            lora_alpha=args.lora_alpha, lora_dropout=0.0, bias="none",
-            use_gradient_checkpointing="unsloth")
-    except ImportError:
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        from peft import get_peft_model, LoraConfig
+    # Unsloth needs Ampere+ (sm_80) for its fast kernels, and unsloth_zoo's
+    # temporary_patches assumes torch._inductor.config is auto-imported (true
+    # in torch 2.5+, false in 2.4). On Pascal/Volta or older torch, skip
+    # straight to the transformers+peft path. UNSLOTH_DISABLE=1 forces it.
+    disable_unsloth = (
+        os.environ.get("UNSLOTH_DISABLE", "").lower() in {"1", "true", "yes"}
+        or (cuda_ok and cap[0] < 8)
+    )
+    unsloth_loaded = False
+    if not disable_unsloth:
+        try:
+            # Eagerly import the submodule unsloth_zoo touches via inspect — in
+            # torch 2.4 `import torch` doesn't pull in torch._inductor.config.
+            import torch._inductor.config  # noqa: F401
+            from unsloth import FastLanguageModel
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                args.model_name,
+                load_in_4bit=True,
+                max_seq_length=args.max_seq_length,
+                dtype=compute_dtype,
+                device_map=device_map,
+            )
+            model = FastLanguageModel.get_peft_model(
+                model, r=args.lora_r,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                lora_alpha=args.lora_alpha, lora_dropout=0.0, bias="none",
+                use_gradient_checkpointing="unsloth")
+            unsloth_loaded = True
+        except Exception as e:
+            logger.warning(f"Unsloth load failed ({type(e).__name__}: {e}); "
+                           "falling back to transformers + peft.")
+    if not unsloth_loaded:
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        from peft import get_peft_model, LoraConfig, prepare_model_for_kbit_training
         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        ) if cuda_ok else None
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_name, torch_dtype=compute_dtype, device_map=device_map)
+            args.model_name,
+            torch_dtype=compute_dtype,
+            device_map=device_map,
+            quantization_config=bnb_config,
+        )
+        if bnb_config is not None:
+            model = prepare_model_for_kbit_training(model)
         model = get_peft_model(model, LoraConfig(
             r=args.lora_r, lora_alpha=args.lora_alpha,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-            lora_dropout=0.0, bias="none"))
+            lora_dropout=0.0, bias="none", task_type="CAUSAL_LM"))
 
     if cuda_ok:
         free_b, total_b = torch.cuda.mem_get_info(0)
@@ -266,13 +299,32 @@ def main():
     if args.push_to_hub and not args.hub_model_id:
         logger.warning("--push-to-hub set without --hub-model-id; disabling hub push.")
 
+    # Auto-detect available VRAM and adjust generation count if the GPU is
+    # heavily shared. GRPO peak memory scales roughly as
+    #   num_generations × (prompt_len + completion_len) × model_params.
+    num_gen = args.num_generations
+    grad_accum = 16
+    max_prompt_len = 512
+    max_compl_len = 256
+    if cuda_ok:
+        free_gb = torch.cuda.mem_get_info(0)[0] / 1e9
+        logger.info(f"Free VRAM before trainer init: {free_gb:.2f} GB")
+        if free_gb < 6:
+            num_gen = min(num_gen, 2)
+            max_compl_len = 128
+            logger.warning(f"Very low VRAM ({free_gb:.1f} GB) — reducing to "
+                           f"num_gen={num_gen}, max_compl_len={max_compl_len}")
+        elif free_gb < 12:
+            num_gen = min(num_gen, 4)
+            logger.info(f"Moderate VRAM ({free_gb:.1f} GB) — capping num_gen={num_gen}")
+
     config = GRPOConfig(
-        output_dir=args.output_dir, num_generations=args.num_generations,
-        per_device_train_batch_size=1, gradient_accumulation_steps=8,
+        output_dir=args.output_dir, num_generations=num_gen,
+        per_device_train_batch_size=1, gradient_accumulation_steps=grad_accum,
         learning_rate=args.lr, max_steps=args.max_steps,
         save_steps=args.save_steps, logging_steps=10,
         save_total_limit=args.save_total_limit,
-        max_prompt_length=1024, max_completion_length=512,
+        max_prompt_length=max_prompt_len, max_completion_length=max_compl_len,
         temperature=args.temperature, beta=args.beta,
         bf16=use_bf16, fp16=use_fp16,
         bf16_full_eval=use_bf16, fp16_full_eval=use_fp16,
