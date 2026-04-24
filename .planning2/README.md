@@ -9,7 +9,7 @@ Load these files in order. Each is self-contained but `00_PLAN.md` is the author
 | 02 | `02_REWARD_DESIGN.md` | Before writing `rubric.py`. Exact formulas + gaming-resistance analysis. |
 | 03 | `03_TRAINING_SETUP.md` | Before writing `training/train.py`. Unsloth + TRL GRPO recipe. |
 | 04 | `04_DEMO_AND_SUBMISSION.md` | Before Phase 10. What judges need to see. |
-| 05 | `05_R1_CODE_REFERENCES.md` | As needed. Exact file:line pointers in the existing R1 codebase. |
+| 05 | `05_TRAINING_ISSUES_AND_FIXES.md` | **Critical.** Bugs found in train.py reward_fn, fixes, and better ideas for training. |
 
 ## Hackathon context (TL;DR)
 
