@@ -58,41 +58,121 @@ def parse_args():
     return p.parse_args()
 
 
-def build_scenario_dataset(env_url, num_scenarios=200, seed=42):
-    import requests
+def build_scenario_dataset(num_scenarios=200, seed=42):
+    """Build a dataset of scenario prompts using the LOCAL env (no HTTP).
+
+    Each prompt embeds the episode seed as [SEED:N] so the reward function
+    can recreate the exact same env state for fair GRPO comparison.
+    """
     from datasets import Dataset
+    from survivecity_env.env import SurviveCityEnv
     from survivecity_env.prompts import build_system_prompt
 
     rng = random.Random(seed)
     prompts = []
     for i in range(num_scenarios):
         try:
-            r = requests.post(f"{env_url}/reset", json={"seed": rng.randint(0, 999999)})
-            r.raise_for_status()
-            obs = r.json()
-            prompt = build_system_prompt(0, obs.get("description", ""))
+            ep_seed = rng.randint(0, 999999)
+            env = SurviveCityEnv()
+            obs = env.reset(seed=ep_seed)
+            desc = obs.get("description", "")
+            # Embed seed so reward_fn can recreate the same env state.
+            # GRPO compares completions within a group — same seed = fair comparison.
+            prompt = build_system_prompt(0, f"[SEED:{ep_seed}]\n{desc}")
             prompts.append({"prompt": prompt, "scenario_id": i})
         except Exception as e:
             logger.warning(f"Scenario {i} failed: {e}")
+    logger.info(f"Built {len(prompts)} scenario prompts")
     return Dataset.from_list(prompts)
 
 
-def create_reward_fn(env_url):
-    import requests
+# Valid action types for the env
+_VALID_ACTIONS = frozenset({
+    "move_up", "move_down", "move_left", "move_right",
+    "eat", "wait", "vote_lockout", "broadcast",
+})
+_RANDOM_ACTIONS = ["move_up", "move_down", "move_left", "move_right", "eat", "wait"]
+
+
+def _parse_action(text: str, agent_id: int = 0):
+    """Parse a JSON action from model output. Returns dict or None."""
+    text = text.strip()
+    # Handle markdown code blocks: ```json ... ```
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1].removeprefix("json").strip()
+    # Find the first valid JSON object in the text
+    for start in range(len(text)):
+        if text[start] == '{':
+            for end in range(len(text), start, -1):
+                if text[end - 1] == '}':
+                    try:
+                        d = json.loads(text[start:end])
+                        d["agent_id"] = agent_id
+                        if d.get("action_type") in _VALID_ACTIONS:
+                            return d
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+    return None
+
+
+def create_reward_fn(env_url=None):
+    """Create the GRPO reward function using LOCAL env instances.
+
+    Fixes over the original HTTP-based version:
+      1. Each completion gets its own SurviveCityEnv (no singleton corruption).
+      2. The env is reset with the SAME seed embedded in the prompt, so all
+         GRPO completions for the same prompt see the same scenario.
+      3. After the model's action, the episode is completed with random
+         actions so the reward captures downstream effects (not just +0.005).
+      4. Action JSON is validated before submission.
+    """
+    import re
+    from survivecity_env.env import SurviveCityEnv
 
     def reward_fn(prompts, completions, **kwargs):
         rewards = []
-        for c in completions:
+        for prompt, completion in zip(prompts, completions):
             try:
-                text = c.strip()
-                if text.startswith("```"):
-                    text = text.split("```")[1].removeprefix("json")
-                action = json.loads(text)
-                action.setdefault("agent_id", 0)
-                r = requests.post(f"{env_url}/step", json=action, timeout=5)
-                r.raise_for_status()
-                rewards.append(r.json().get("reward", 0.01))
-            except Exception:
+                # Extract seed from the prompt for deterministic env replay
+                seed_match = re.search(r'\[SEED:(\d+)\]', prompt)
+                ep_seed = int(seed_match.group(1)) if seed_match else (
+                    hash(prompt) % 1_000_000)
+
+                # Create a FRESH env — no shared state between completions
+                env = SurviveCityEnv()
+                obs = env.reset(seed=ep_seed)
+
+                # Parse the model's action for agent 0
+                action = _parse_action(completion, agent_id=0)
+                if action is None:
+                    rewards.append(0.01)  # malformed output = min reward
+                    continue
+
+                # Execute the model's action
+                obs = env.step(action)
+
+                # Complete the episode with random actions so the reward
+                # reflects the downstream impact of the model's decision.
+                # Use a seeded RNG for reproducibility within the same call.
+                rollout_rng = random.Random(ep_seed + 7)
+                steps = 0
+                while not obs.get("done", False) and steps < 350:
+                    aid = obs.get("metadata", {}).get("current_agent_id", 0)
+                    sc = obs.get("step_count", 0)
+                    if sc == 50:
+                        rand_act = {"agent_id": aid, "action_type": "vote_lockout",
+                                    "vote_target": rollout_rng.choice([0, 1, 2])}
+                    else:
+                        rand_act = {"agent_id": aid,
+                                    "action_type": rollout_rng.choice(_RANDOM_ACTIONS)}
+                    obs = env.step(rand_act)
+                    steps += 1
+
+                rewards.append(obs.get("reward", 0.01))
+            except Exception as e:
+                logger.debug(f"reward_fn error: {e}")
                 rewards.append(0.01)
         return rewards
 
@@ -175,7 +255,7 @@ def main():
             tokenizer.add_special_tokens({"pad_token": "<|PAD_TOKEN|>"})
             model.resize_token_embeddings(len(tokenizer))
 
-    dataset = build_scenario_dataset(args.env_url, 200, args.seed)
+    dataset = build_scenario_dataset(200, args.seed)
 
     from trl import GRPOTrainer, GRPOConfig
 
@@ -234,7 +314,7 @@ def main():
 
     trainer = GRPOTrainer(
         model=model, args=config,
-        reward_funcs=[create_reward_fn(args.env_url)],
+        reward_funcs=[create_reward_fn(args.env_url)],  # env_url kept for compat but local env used
         train_dataset=dataset, processing_class=tokenizer)
 
     # Resolve --resume-from-checkpoint:
