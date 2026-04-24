@@ -108,6 +108,14 @@ def main():
     else:
         logger.warning("CUDA not available — training will fall back to CPU.")
 
+    # Force the entire model onto the single visible GPU. With --gpus '"device=N"',
+    # the container sees exactly one device (cuda:0). accelerate's auto device-map
+    # planner can otherwise underestimate available memory and dispatch some
+    # modules to CPU/disk, which trips bnb's validate_environment with
+    #   ValueError: Some modules are dispatched on the CPU or the disk.
+    # Qwen2.5-3B-4bit is ~2 GB; a V100-32GB has plenty of room.
+    device_map = {"": 0} if cuda_ok else "cpu"
+
     try:
         from unsloth import FastLanguageModel
         model, tokenizer = FastLanguageModel.from_pretrained(
@@ -115,6 +123,7 @@ def main():
             load_in_4bit=True,
             max_seq_length=args.max_seq_length,
             dtype=compute_dtype,
+            device_map=device_map,
         )
         model = FastLanguageModel.get_peft_model(
             model, r=args.lora_r,
@@ -126,11 +135,17 @@ def main():
         from peft import get_peft_model, LoraConfig
         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_name, torch_dtype=compute_dtype, device_map="auto")
+            args.model_name, torch_dtype=compute_dtype, device_map=device_map)
         model = get_peft_model(model, LoraConfig(
             r=args.lora_r, lora_alpha=args.lora_alpha,
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
             lora_dropout=0.0, bias="none"))
+
+    if cuda_ok:
+        free_b, total_b = torch.cuda.mem_get_info(0)
+        logger.info(
+            f"GPU memory after load: free={free_b/1e9:.2f}GB total={total_b/1e9:.2f}GB"
+        )
 
     # Make sure the tokenizer has a pad token (Qwen2.5 doesn't ship one).
     if tokenizer.pad_token_id is None:
