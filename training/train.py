@@ -35,6 +35,26 @@ def parse_args():
     p.add_argument("--beta", type=float, default=0.04)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--report-to", default="tensorboard")
+    # Resume / portability flags — let the same script run on Kaggle and DGX,
+    # using HF Hub as a checkpoint bridge between the two.
+    p.add_argument(
+        "--resume-from-checkpoint", default=None,
+        help="Path to a checkpoint dir, or 'auto' to pick the latest under "
+             "--output-dir, or a HF Hub repo id (will be downloaded first).")
+    p.add_argument(
+        "--push-to-hub", action="store_true",
+        help="Push every saved checkpoint to the HF Hub repo named by "
+             "--hub-model-id. Requires HUGGINGFACE_TOKEN / `huggingface-cli login`.")
+    p.add_argument(
+        "--hub-model-id", default=None,
+        help="HF Hub repo id, e.g. 'sirjansingh/zombiee-qwen-grpo-lora'. "
+             "Created if it does not exist.")
+    p.add_argument(
+        "--hub-private", action="store_true",
+        help="Create the hub repo as private (default: public).")
+    p.add_argument(
+        "--save-total-limit", type=int, default=3,
+        help="Keep at most this many checkpoints on disk (older ones deleted).")
     return p.parse_args()
 
 
@@ -158,17 +178,30 @@ def main():
     dataset = build_scenario_dataset(args.env_url, 200, args.seed)
 
     from trl import GRPOTrainer, GRPOConfig
+
+    # Hub push lets Kaggle and DGX share checkpoints. We push after every save
+    # so a crashed/timed-out Kaggle session is recoverable from DGX (and vice
+    # versa). hub_model_id can be None when --push-to-hub is False.
+    push_to_hub = bool(args.push_to_hub and args.hub_model_id)
+    if args.push_to_hub and not args.hub_model_id:
+        logger.warning("--push-to-hub set without --hub-model-id; disabling hub push.")
+
     config = GRPOConfig(
         output_dir=args.output_dir, num_generations=args.num_generations,
         per_device_train_batch_size=1, gradient_accumulation_steps=8,
         learning_rate=args.lr, max_steps=args.max_steps,
         save_steps=args.save_steps, logging_steps=10,
+        save_total_limit=args.save_total_limit,
         max_prompt_length=1024, max_completion_length=512,
         temperature=args.temperature, beta=args.beta,
         bf16=use_bf16, fp16=use_fp16,
         bf16_full_eval=use_bf16, fp16_full_eval=use_fp16,
         tf32=use_bf16,  # TF32 is also Ampere+ only
         report_to=args.report_to if args.report_to != "none" else None,
+        push_to_hub=push_to_hub,
+        hub_model_id=args.hub_model_id if push_to_hub else None,
+        hub_private_repo=args.hub_private,
+        hub_strategy="every_save" if push_to_hub else "end",
         seed=args.seed)
     logger.info(
         f"GRPOConfig precision: bf16={config.bf16} fp16={config.fp16} "
@@ -204,10 +237,60 @@ def main():
         reward_funcs=[create_reward_fn(args.env_url)],
         train_dataset=dataset, processing_class=tokenizer)
 
-    trainer.train()
-    model.save_pretrained(args.output_dir)
+    # Resolve --resume-from-checkpoint:
+    #   None / ""        -> no resume (fresh training)
+    #   "auto"           -> let HF Trainer find the latest checkpoint-* dir
+    #                       under output_dir
+    #   <local path>     -> resume from that path
+    #   <hf repo id>     -> snapshot_download from the Hub, then resume
+    resume = _resolve_resume(args.resume_from_checkpoint, args.output_dir)
+    if resume is not None:
+        logger.info(f"Resuming from checkpoint: {resume}")
+
+    try:
+        trainer.train(resume_from_checkpoint=resume)
+    except KeyboardInterrupt:
+        logger.warning("Interrupted — saving checkpoint before exit.")
+        trainer.save_model(args.output_dir)
+        raise
+
+    trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+    if push_to_hub:
+        logger.info(f"Pushing final model to hub: {args.hub_model_id}")
+        trainer.push_to_hub(commit_message="final model")
     logger.info(f"Saved to {args.output_dir}")
+
+
+def _resolve_resume(spec, output_dir):
+    """Turn --resume-from-checkpoint into something Trainer.train accepts."""
+    import os
+    if not spec:
+        return None
+    if spec == "auto":
+        # Trainer.train accepts True to mean "find latest checkpoint in output_dir".
+        # But only if output_dir actually contains one — otherwise it errors.
+        if os.path.isdir(output_dir) and any(
+            d.startswith("checkpoint-") for d in os.listdir(output_dir)
+        ):
+            return True
+        logger.info(f"No checkpoint-* dir under {output_dir}; starting fresh.")
+        return None
+    if os.path.isdir(spec):
+        return spec
+    # Treat as HF Hub repo id, e.g. "user/zombiee-qwen-grpo-lora"
+    if "/" in spec and not spec.startswith("./") and not spec.startswith("/"):
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            raise RuntimeError(
+                "huggingface_hub required to resume from a Hub repo; "
+                "pip install huggingface_hub"
+            )
+        local = snapshot_download(repo_id=spec, local_dir=os.path.join(output_dir, "_resume"))
+        logger.info(f"Downloaded {spec} -> {local}")
+        return local
+    return spec  # let Trainer surface the error if the path is bad
 
 
 if __name__ == "__main__":
