@@ -172,7 +172,7 @@ Default CMD fits a 12-hour DGX session and saves a checkpoint after every
 step: bf16 base (no 4-bit), num_generations=12, grad_accum=4 (48 generations
 evaluated per step), max_completion_length=512, gradient checkpointing on,
 optim=adamw_torch_fused, **max_steps=15, save_steps=1, save_total_limit=15**.
-Override the CMD to add `--push-to-hub --hub-model-id <user>/zombiee-v2
+Override the CMD to add `--push-to-hub --hub-model-id noanya/zombiee-v2
 --resume-from-checkpoint auto`.
 
 ### Train on DGX bare-metal
@@ -193,7 +193,7 @@ python -m training.train \
     --lora-r 32 --lora-alpha 64 \
     --max-seq-length 4096 \
     --no-4bit \
-    --push-to-hub --hub-model-id <user>/zombiee-v2 \
+    --push-to-hub --hub-model-id noanya/zombiee-v2 \
     --resume-from-checkpoint auto
 ```
 
@@ -214,7 +214,7 @@ python -m training.train --no-4bit ...
 ```bash
 cd v2
 python -m training.eval \
-    --lora-path <user>/zombiee-v2 --revision checkpoint-100 \
+    --lora-path noanya/zombiee-v2 --revision checkpoint-100 \
     --baseline-episodes 30 --trained-episodes 10 \
     --eval-step 100 \
     --output-dir ./eval_results

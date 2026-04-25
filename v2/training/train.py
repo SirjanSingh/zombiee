@@ -77,8 +77,17 @@ def parse_args():
     p.add_argument(
         "--push-to-hub", action="store_true",
         help="Push every checkpoint to --hub-model-id (requires HUGGINGFACE_TOKEN).")
-    p.add_argument("--hub-model-id", default=None)
-    p.add_argument("--hub-private", action="store_true")
+    p.add_argument(
+        "--hub-model-id", default="noanya/zombiee-v2",
+        help="HF Hub repo id. Default 'noanya/zombiee-v2' is the team's v2 repo "
+             "(separate from v1's 'noanya/zombiee' so v1 artefacts stay frozen).")
+    p.add_argument(
+        "--hub-private", action="store_true", default=True,
+        help="Create the hub repo as private. Default True for unreleased work; "
+             "use --hub-public to make a fresh repo public.")
+    p.add_argument(
+        "--hub-public", dest="hub_private", action="store_false",
+        help="Make the hub repo public (overrides --hub-private).")
     p.add_argument("--save-total-limit", type=int, default=15,
                    help="Keep at most this many checkpoints on disk locally. "
                         "Default 15 keeps every save from a 15-step / save_steps=1 run "

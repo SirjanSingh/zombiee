@@ -63,7 +63,7 @@ docker run --rm --gpus all \
         --max-completion-length 512 \
         --lora-r 32 --lora-alpha 64 \
         --no-4bit \
-        --push-to-hub --hub-model-id <user>/zombiee-v2 \
+        --push-to-hub --hub-model-id noanya/zombiee-v2 \
         --resume-from-checkpoint auto
 ```
 
@@ -85,7 +85,7 @@ python -m training.train \
     --lora-r 32 --lora-alpha 64 \
     --max-seq-length 4096 \
     --no-4bit \
-    --push-to-hub --hub-model-id <user>/zombiee-v2 \
+    --push-to-hub --hub-model-id noanya/zombiee-v2 \
     --resume-from-checkpoint auto
 ```
 
@@ -97,7 +97,7 @@ after every save (so a 15GB box can pull and eval them mid-training).
 ```bash
 cd v2
 python -m training.eval \
-    --lora-path <user>/zombiee-v2 \
+    --lora-path noanya/zombiee-v2 \
     --baseline-episodes 30 \
     --trained-episodes 10 \
     --eval-step 50 \

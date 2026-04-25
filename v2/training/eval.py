@@ -38,11 +38,16 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--baseline-episodes", type=int, default=30)
     p.add_argument("--trained-episodes", type=int, default=10)
-    p.add_argument("--lora-path", default=None,
-                   help="Local checkpoint dir OR HF Hub repo id. Optional.")
-    p.add_argument("--revision", default=None,
-                   help="Hub revision/branch (e.g. 'checkpoint-100'). Used only "
-                        "if --lora-path is a Hub repo id.")
+    p.add_argument(
+        "--lora-path", default="noanya/zombiee-v2",
+        help="Local checkpoint dir OR HF Hub repo id. Default 'noanya/zombiee-v2' "
+             "is the team's v2 Hub repo. Pass an empty string or a path that "
+             "doesn't exist to fall back to a random-policy 'trained' run "
+             "(useful for sanity-checking the eval pipeline before any LoRA exists).")
+    p.add_argument(
+        "--revision", default=None,
+        help="Hub revision (branch / tag / commit-sha) to download. Used only "
+             "if --lora-path is a Hub repo id. Defaults to 'main' (latest).")
     p.add_argument("--model-name", default="Qwen/Qwen2.5-3B-Instruct",
                    help="Base model the LoRA was trained against.")
     p.add_argument("--seed", type=int, default=42)

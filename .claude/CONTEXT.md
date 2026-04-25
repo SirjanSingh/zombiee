@@ -78,11 +78,11 @@ cd v2 && python -m training.train \
     --max-steps 200 --save-steps 25 \
     --lora-r 32 --lora-alpha 64 \
     --num-generations 8 \
-    --push-to-hub --hub-model-id <user>/zombiee-v2
+    --push-to-hub --hub-model-id noanya/zombiee-v2
 
 # v2 eval on a separate 15GB box
 cd v2 && python -m training.eval \
-    --lora-path <user>/zombiee-v2 --revision checkpoint-100 \
+    --lora-path noanya/zombiee-v2 --revision checkpoint-100 \
     --baseline-episodes 30 --trained-episodes 10 \
     --eval-step 100
 ```
