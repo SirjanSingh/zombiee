@@ -537,6 +537,76 @@ def main():
         )
         model = get_peft_model(model, peft_cfg)
 
+    # ------------------------------------------------------------------
+    # Re-arm the input-grad hook AFTER PEFT wrapping.
+    #
+    # `prepare_model_for_kbit_training` registers a forward hook on
+    # `model.get_input_embeddings()` that flips `requires_grad=True` on the
+    # embedding output. That hook is registered on the BASE model — but
+    # `get_peft_model(...)` (and `PeftModel.from_pretrained` for warmstart)
+    # then wraps the base model in `PeftModel`, which exposes a NEW
+    # `get_input_embeddings()` chain. In some torch/peft version combos
+    # (incl. ours: torch 2.5.1 + peft 0.13.2 + transformers 4.46.3) the
+    # original hook stops firing — and torch.utils.checkpoint then warns:
+    #   "None of the inputs have requires_grad=True. Gradients will be None"
+    # This is the silent-trainer bug: the loop runs, checkpoints save, but
+    # the LoRA never updates because no grad flows through the checkpointed
+    # transformer blocks.
+    #
+    # Fix: explicitly re-enable input grads on the PEFT-wrapped model and
+    # do a tiny live forward+backward sanity check that an actual gradient
+    # lands on a LoRA param. If it doesn't, fail LOUD instead of training
+    # for 12h on a no-op.
+    # ------------------------------------------------------------------
+    if args.gradient_checkpointing and hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+        logger.info("Re-armed enable_input_require_grads() on PEFT-wrapped model.")
+
+    # Sanity-check: do a 1-token forward+backward and confirm at least one
+    # LoRA param received a non-None gradient. If not, the gradient-flow
+    # warning was real and training would silently no-op.
+    try:
+        model.train()
+        _device = next(model.parameters()).device
+        _input_ids = torch.tensor([[tokenizer.bos_token_id or tokenizer.eos_token_id or 0]],
+                                  device=_device)
+        _labels = _input_ids.clone()
+        _out = model(input_ids=_input_ids, labels=_labels)
+        if getattr(_out, "loss", None) is None:
+            raise RuntimeError("sanity forward returned no loss")
+        _out.loss.backward()
+        lora_with_grad = []
+        lora_without_grad = []
+        for name, p in model.named_parameters():
+            if "lora_" in name and p.requires_grad:
+                (lora_with_grad if p.grad is not None and p.grad.abs().sum() > 0
+                 else lora_without_grad).append(name)
+        # Clean up the sanity grad so it doesn't pollute the first real step
+        model.zero_grad(set_to_none=True)
+        if not lora_with_grad:
+            logger.error(
+                f"GRAD SANITY FAILED: 0 LoRA params got a gradient; "
+                f"{len(lora_without_grad)} LoRA params had grad=None. "
+                f"Training would silently no-op. Check enable_input_require_grads "
+                f"+ gradient_checkpointing interaction."
+            )
+            raise RuntimeError(
+                "Gradient flow sanity check failed — refusing to train a no-op "
+                "for hours. See log above."
+            )
+        logger.info(
+            f"GRAD SANITY OK: {len(lora_with_grad)} LoRA params received gradient "
+            f"(of {len(lora_with_grad) + len(lora_without_grad)} trainable). "
+            f"sample={lora_with_grad[0]}"
+        )
+    except RuntimeError:
+        raise
+    except Exception as _e:
+        logger.warning(
+            f"Grad sanity check could not run ({type(_e).__name__}: {_e}). "
+            f"Proceeding, but watch for grad_norm=0 in [metrics] lines."
+        )
+
     if cuda_ok:
         free_b, _ = torch.cuda.mem_get_info(0)
         logger.info(f"GPU memory after model load: free={free_b/1e9:.2f}GB")
