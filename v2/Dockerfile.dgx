@@ -56,21 +56,26 @@ RUN pip install --no-cache-dir \
 
 # Core training stack — clean modern set, mutually compatible.
 #
-# trl==0.13.0 is the SWEET SPOT: it has GRPOTrainer (added Jan 2025), but
-# does NOT have the judges.py + mergekit_utils.py unconditional imports
-# that landed in trl 0.15+. So `from trl import GRPOTrainer` works without
-# any of the optional-integration packages installed.
+# trl==0.13.0 was the FIRST trl with GRPOTrainer (Jan 2025) but its
+# setup.py requires transformers>=4.46.0. Bumping transformers to 4.46.3
+# resolves the trl/peft/transformers triangle.
 #
-# transformers/peft/accelerate/datasets are the versions trl 0.13 was
-# tested against in its release CI. Don't bump these without re-testing
-# the full stack.
+# accelerate 1.1.1 + peft 0.13.2 + datasets 3.1.0 are the versions
+# released in the same window (Oct-Nov 2024) and tested together.
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "transformers==4.45.2" \
-    "accelerate==0.34.2" \
+    "transformers==4.46.3" \
+    "accelerate==1.1.1" \
     "peft==0.13.2" \
-    "datasets==3.0.1" \
+    "datasets==3.1.0" \
     "trl==0.13.0"
+
+# Backwards-compat alias: append `TRANSFORMERS_CACHE` to transformers.utils.hub
+# in case any optional dep (e.g. llm_blender that trl might chain-import)
+# still references the legacy constant. Idempotent — only appends if missing.
+RUN HUB_PY=/usr/local/lib/python3.11/dist-packages/transformers/utils/hub.py \
+ && grep -q '^TRANSFORMERS_CACHE' "$HUB_PY" \
+    || printf '\n# Legacy alias for libs that haven'\''t caught up to the rename (added by Dockerfile.dgx)\nTRANSFORMERS_CACHE = HF_HUB_CACHE if "HF_HUB_CACHE" in dir() else "~/.cache/huggingface/hub"\n' >> "$HUB_PY"
 
 # 4-bit quantisation (only used when train.py runs WITHOUT --no-4bit).
 # Our default DGX run uses --no-4bit (bf16 base on Ampere+) but we install
