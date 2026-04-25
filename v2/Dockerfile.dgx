@@ -130,6 +130,9 @@ EXPOSE 7861
 #   --no-4bit                          bf16 base (cleaner grads than 4-bit nf4)
 #   --gradient-checkpointing (default) lets the bigger group fit
 #   --optim adamw_torch_fused          ~3-5% throughput gain on sm_80+
+#   --vram-reserve-gb 16 (default)     holder pins remaining VRAM so co-tenants
+#                                       on shared DGX can't claim it mid-run.
+#                                       Set 0 if you own the GPU exclusively.
 #
 # To enable Hub push, override CMD or pass extra args:
 #   docker run ... survivecity-v2-dgx <override-args>

@@ -50,7 +50,10 @@ docker run --rm --gpus all \
 The container's default CMD fits a 12-hour DGX session: **15 steps, checkpoint
 every step (15 saves total), num_generations=12, LoRA r=32 α=64,
 max_completion_length=512, gradient checkpointing on, bf16 base (--no-4bit),
-adamw_torch_fused optimizer**. Override the CMD to push to Hub:
+adamw_torch_fused optimizer, VRAM holder reserving the unused 14 GB so
+co-tenants on a shared DGX can't claim it mid-run** (`--vram-reserve-gb 16`
+by default; set 0 if you own the GPU exclusively). Override the CMD to push
+to Hub:
 
 ```bash
 docker run --rm --gpus all \

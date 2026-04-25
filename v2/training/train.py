@@ -23,6 +23,12 @@ non-4bit path. Lets num_generations=12 fit alongside max_completion_length=512
 without OOM at peak. Optimizer is `adamw_torch_fused` for an extra 3-5%
 throughput on Ampere+.
 
+Multi-tenant DGX safety: a `--vram-reserve-gb` flag (default 16) allocates a
+holder tensor for the unused headroom on shared GPUs. This pins the entire
+GPU to our process so co-tenants can't claim free memory mid-run and crash us
+with an OOM. No admin rights needed; works without nvidia-smi compute-mode
+changes. Set to 0 if you have exclusive GPU access.
+
 Hub push: opt-in via --push-to-hub. With `hub_strategy="every_save"`, every
 save-step pushes the entire output_dir to the Hub repo, so the 15GB eval box
 can pull mid-training and run training.eval against any checkpoint.
@@ -114,6 +120,17 @@ def parse_args():
         "--no-4bit", action="store_true",
         help="Skip bitsandbytes 4-bit and load the base model in bf16/fp16 at full weight precision. "
              "Recommended on 30GB+ A100/H100 boxes — gives cleaner gradients than 4-bit.")
+    p.add_argument(
+        "--vram-reserve-gb", type=int, default=16,
+        help="GPU memory in GB to leave free for training itself. Whatever VRAM remains "
+             "after this is allocated as a 'holder' tensor that lives for the entire process, "
+             "preventing co-tenants on a shared DGX from claiming the headroom (which would "
+             "cause OOM mid-training when our peak memory grows). Set to 0 to disable the "
+             "holder entirely (single-tenant or admin-controlled GPUs). "
+             "Default 16 is sized for the v2 default config "
+             "(num_generations=12, max_completion_length=512, gradient checkpointing on, "
+             "bf16 base) — peak ~13-15 GB. Bump to 20+ if you've raised num_generations or "
+             "disabled gradient checkpointing.")
     return p.parse_args()
 
 
@@ -262,6 +279,63 @@ def main():
         )
     else:
         logger.warning("CUDA not available — training will be CPU-only (slow).")
+
+    # --------------------------------------------------------------
+    # VRAM holder — pin the GPU's headroom so co-tenants can't claim
+    # mid-run and cause OOM. Standard pattern for shared GPUs without
+    # `nvidia-smi -c EXCLUSIVE_PROCESS` (which we lack admin rights for).
+    #
+    # Allocate a uint8 tensor of (free_now - reserve - 1GB safety). Stash
+    # it on the torch module so Python's GC never touches it; release
+    # only when the process exits. As long as this tensor exists, the
+    # GPU appears nearly-full to other users — they can't allocate the
+    # gap between our current usage and our reserved budget.
+    # --------------------------------------------------------------
+    if cuda_ok and args.vram_reserve_gb > 0:
+        try:
+            free_b, _ = torch.cuda.mem_get_info(0)
+            free_gb = free_b / 1e9
+            safety_gb = 1.0
+            hold_gb = free_gb - args.vram_reserve_gb - safety_gb
+            if hold_gb > 0.5:
+                # Stash on the torch module — guaranteed to outlive any local
+                # frame and survive even if main() raises mid-run. Using uint8
+                # (1 byte/element) for exact GB sizing in binary GB.
+                torch._zombiee_vram_holder = torch.empty(
+                    int(hold_gb * (1024 ** 3)),
+                    dtype=torch.uint8,
+                    device="cuda:0",
+                )
+                # Sanity-check: re-read free memory to confirm the hold landed
+                free_after_b, _ = torch.cuda.mem_get_info(0)
+                logger.info(
+                    f"VRAM holder pinned: {hold_gb:.2f} GB held on GPU 0 "
+                    f"(reserved {args.vram_reserve_gb} GB for training, "
+                    f"{safety_gb:.1f} GB safety). "
+                    f"Free VRAM after holder: {free_after_b/1e9:.2f} GB. "
+                    f"Co-tenants now see this GPU as effectively full."
+                )
+            else:
+                logger.info(
+                    f"Skipping VRAM holder: free {free_gb:.1f} GB - reserve "
+                    f"{args.vram_reserve_gb} GB - safety {safety_gb:.1f} GB = "
+                    f"{hold_gb:.1f} GB (need >0.5 GB to bother). Likely a small GPU."
+                )
+        except Exception as e:
+            # OOM allocating the holder is non-fatal — training can still run,
+            # just without the headroom guarantee. Useful when the GPU was
+            # already mostly-claimed by another holder process.
+            etype = type(e).__name__
+            if "out of memory" in str(e).lower() or "OutOfMemoryError" in etype:
+                logger.warning(
+                    f"VRAM holder allocation hit OOM ({etype}): "
+                    f"{str(e)[:120]}. Continuing without the holder — training "
+                    f"will run but may OOM if co-tenants claim free memory."
+                )
+            else:
+                raise
+    elif cuda_ok:
+        logger.info("VRAM holder disabled (--vram-reserve-gb 0). Training has no headroom guarantee.")
 
     device_map = {"": 0} if cuda_ok else "cpu"
 
