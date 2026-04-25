@@ -44,16 +44,112 @@ HTTP server required during training (same pattern as v1).
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import logging
 import os
 import random
 import re
+import signal
+import sys
+import threading
+import time
 
 import torch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("survivecity_v2.train")
+
+# Crash diagnostics: dumps Python tracebacks for every thread on fatal signals
+# (SIGSEGV, SIGABRT, SIGBUS, SIGFPE) and on `kill -USR1 <pid>` for live probes.
+# Without this, an OS-level kill (OOM, SIGSEGV from CUDA, etc.) leaves zero
+# clue why training "just stopped".
+faulthandler.enable()
+try:
+    faulthandler.register(signal.SIGUSR1)
+except (AttributeError, ValueError):
+    pass  # Windows / non-POSIX
+# Force line buffering so the log we tail actually shows the LAST line before
+# the kill, not whatever happened to be in the 8KB stdio buffer.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except AttributeError:
+    pass
+
+
+def _report_existing_checkpoints(output_dir: str) -> None:
+    """Print any leftover checkpoint-* dirs and their disk usage at startup.
+
+    Surfaces stale checkpoints from a previous run BEFORE training starts —
+    so you notice if save-total-limit kept old ones around, or if a previous
+    crashed run is about to be silently overwritten / resumed.
+    """
+    if not os.path.isdir(output_dir):
+        logger.info(f"checkpoints: output_dir={output_dir} doesn't exist yet (fresh start).")
+        return
+    ckpts = sorted(
+        d for d in os.listdir(output_dir)
+        if d.startswith("checkpoint-") and os.path.isdir(os.path.join(output_dir, d))
+    )
+    if not ckpts:
+        logger.info(f"checkpoints: no checkpoint-* dirs under {output_dir} (fresh start).")
+        return
+    total_gb = 0.0
+    for c in ckpts:
+        p = os.path.join(output_dir, c)
+        try:
+            sz = sum(
+                os.path.getsize(os.path.join(dp, f))
+                for dp, _, fs in os.walk(p) for f in fs
+            ) / 1e9
+        except OSError:
+            sz = float("nan")
+        total_gb += sz if sz == sz else 0
+        logger.info(f"checkpoints: found {c}  ({sz:.2f} GB)")
+    logger.info(
+        f"checkpoints: {len(ckpts)} existing under {output_dir}, total {total_gb:.2f} GB. "
+        f"Pass --resume-from-checkpoint auto to continue from the latest."
+    )
+
+
+def _start_mem_watchdog(interval_s: int = 30) -> None:
+    """Background thread that logs RSS + GPU memory every interval_s seconds.
+
+    Lets you tell apart "killed by linux OOM" (RSS climbing → big jump → dead)
+    from "killed externally" (RSS flat right up to the moment of death).
+    Runs as a daemon so it doesn't block process exit.
+    """
+    try:
+        import psutil
+        proc = psutil.Process()
+        get_rss_gb = lambda: proc.memory_info().rss / 1e9
+        get_avail_gb = lambda: psutil.virtual_memory().available / 1e9
+    except ImportError:
+        import resource
+        get_rss_gb = lambda: resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
+        get_avail_gb = lambda: float("nan")
+
+    def loop():
+        while True:
+            try:
+                msg = f"[mem] RSS={get_rss_gb():.1f}GB sys_avail={get_avail_gb():.1f}GB"
+                if torch.cuda.is_available():
+                    free, total = torch.cuda.mem_get_info(0)
+                    alloc = torch.cuda.memory_allocated(0) / 1e9
+                    reserved = torch.cuda.memory_reserved(0) / 1e9
+                    msg += (
+                        f"  GPU_free={free/1e9:.1f}/{total/1e9:.1f}GB "
+                        f"alloc={alloc:.1f}GB reserved={reserved:.1f}GB"
+                    )
+                logger.info(msg)
+            except Exception as e:
+                logger.warning(f"mem watchdog error: {type(e).__name__}: {e}")
+            time.sleep(interval_s)
+
+    t = threading.Thread(target=loop, daemon=True, name="mem-watchdog")
+    t.start()
+    logger.info(f"mem watchdog started (interval={interval_s}s)")
 
 
 def parse_args():
@@ -142,9 +238,14 @@ def build_scenario_dataset(num_scenarios: int = 200, seed: int = 42):
     from survivecity_v2_env.env import SurviveCityV2Env
     from survivecity_v2_env.prompts import build_system_prompt
 
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        tqdm = lambda x, **kw: x  # noqa: E731
+
     rng = random.Random(seed)
     prompts = []
-    for i in range(num_scenarios):
+    for i in tqdm(range(num_scenarios), desc="build_scenario_dataset"):
         try:
             ep_seed = rng.randint(0, 999999)
             env = SurviveCityV2Env()
@@ -170,10 +271,26 @@ def create_reward_fn():
     from training.inference import (
         parse_action, random_action, RANDOM_NON_VOTE_ACTIONS,
     )
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        tqdm = lambda x, **kw: x  # noqa: E731
+
+    # Track call count + error stats so we can spot a silently-degrading reward
+    # function (e.g. env throwing on every call → all rewards = 0.01).
+    state = {"calls": 0, "errors": 0}
 
     def reward_fn(prompts, completions, **kwargs):
+        state["calls"] += 1
         rewards: list[float] = []
-        for prompt, completion in zip(prompts, completions):
+        n = len(prompts)
+        iterator = tqdm(
+            list(zip(prompts, completions)),
+            total=n,
+            desc=f"reward_fn rollouts (call #{state['calls']})",
+            leave=False,
+        )
+        for prompt, completion in iterator:
             try:
                 seed_match = re.search(r"\[SEED:(\d+)\]", prompt)
                 ep_seed = int(seed_match.group(1)) if seed_match else (
@@ -210,8 +327,21 @@ def create_reward_fn():
                     steps += 1
                 rewards.append(obs.get("reward", 0.01))
             except Exception as e:
-                logger.debug(f"reward_fn error: {e}")
+                # Was logger.debug — invisible at INFO level. Bumped to warning
+                # so a degraded env actually shows up in the log instead of
+                # silently producing all-0.01 rewards.
+                state["errors"] += 1
+                if state["errors"] <= 5 or state["errors"] % 50 == 0:
+                    logger.warning(
+                        f"reward_fn error #{state['errors']} "
+                        f"({type(e).__name__}): {e}"
+                    )
                 rewards.append(0.01)
+        nonzero = sum(1 for r in rewards if r != 0.01)
+        logger.info(
+            f"reward_fn call #{state['calls']}: {n} completions, "
+            f"{nonzero} non-default rewards, total errors so far={state['errors']}"
+        )
         return rewards
 
     return reward_fn
@@ -259,6 +389,15 @@ def main():
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    # Surface leftover checkpoints from a prior run BEFORE we touch anything,
+    # so the operator notices stale state (and can pass --resume-from-checkpoint
+    # auto if they wanted to continue).
+    _report_existing_checkpoints(args.output_dir)
+
+    # Fire up the RSS/GPU mem watchdog NOW, before model load — captures the
+    # baseline so a sudden RSS jump in the run is obvious.
+    _start_mem_watchdog(interval_s=30)
 
     # Precision selection
     cuda_ok = torch.cuda.is_available()
@@ -455,6 +594,10 @@ def main():
         hub_private_repo=args.hub_private,
         hub_strategy="every_save" if push_to_hub else "end",
         seed=args.seed,
+        # HF Trainer auto-disables tqdm when stdout isn't a TTY (i.e. inside
+        # docker, under nohup, when piped through tee). Force it on so the
+        # progress bar actually shows.
+        disable_tqdm=False,
     )
     # Per-step generation budget = num_gen * (per_device_batch * grad_accum).
     # With defaults (num_gen=12, batch=1, grad_accum=4): 48 generations evaluated per
@@ -472,12 +615,50 @@ def main():
 
     _seed_warnings_issued(model)
 
+    # Per-step progress callback. tqdm is unreliable in docker/nohup logs
+    # (rewrites lines, gets buffered, etc.) — this guarantees one clean
+    # "step N/M" line per training step in the log file you're tailing.
+    from transformers import TrainerCallback
+    class StepProgressCallback(TrainerCallback):
+        def __init__(self):
+            self._t_step_start = None
+            self._t_run_start = None
+        def on_train_begin(self, args_, state_, control_, **kw):
+            self._t_run_start = time.time()
+            logger.info(
+                f"[progress] training begin: max_steps={state_.max_steps} "
+                f"num_train_epochs={args_.num_train_epochs}"
+            )
+        def on_step_begin(self, args_, state_, control_, **kw):
+            self._t_step_start = time.time()
+        def on_step_end(self, args_, state_, control_, **kw):
+            dur = time.time() - (self._t_step_start or time.time())
+            elapsed = time.time() - (self._t_run_start or time.time())
+            done = state_.global_step
+            total = state_.max_steps or 1
+            remaining = max(total - done, 0)
+            eta_min = (dur * remaining) / 60 if dur else 0
+            logger.info(
+                f"[progress] step {done}/{total}  "
+                f"step_time={dur:.1f}s  elapsed={elapsed/60:.1f}min  "
+                f"eta={eta_min:.1f}min"
+            )
+        def on_save(self, args_, state_, control_, **kw):
+            logger.info(f"[progress] checkpoint saved at step {state_.global_step}")
+        def on_log(self, args_, state_, control_, logs=None, **kw):
+            if logs:
+                snippet = {k: v for k, v in logs.items() if k in
+                           ("loss", "reward", "grad_norm", "learning_rate", "kl")}
+                if snippet:
+                    logger.info(f"[metrics] step {state_.global_step}: {snippet}")
+
     trainer = GRPOTrainer(
         model=model,
         args=config,
         reward_funcs=[create_reward_fn()],
         train_dataset=dataset,
         processing_class=tokenizer,
+        callbacks=[StepProgressCallback()],
     )
 
     resume = _resolve_resume(args.resume_from_checkpoint, args.output_dir)
@@ -489,6 +670,20 @@ def main():
     except KeyboardInterrupt:
         logger.warning("Interrupted — saving checkpoint before exit.")
         trainer.save_model(args.output_dir)
+        raise
+    except Exception as e:
+        # Without this, any non-KeyboardInterrupt exception bubbles up as a
+        # raw traceback that's easy to miss when scrolling 12h of logs.
+        # logger.exception writes the full traceback at ERROR level — and
+        # also flushes (because we set line_buffering=True at top of file).
+        logger.exception(
+            f"trainer.train CRASHED: {type(e).__name__}: {e}. "
+            f"Attempting to save partial state to {args.output_dir} ..."
+        )
+        try:
+            trainer.save_model(args.output_dir)
+        except Exception as save_err:
+            logger.error(f"Could not save partial state: {save_err}")
         raise
 
     trainer.save_model(args.output_dir)

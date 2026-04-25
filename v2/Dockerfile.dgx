@@ -186,10 +186,14 @@ print('torchao     ', 'absent (intended)' if ta is None else 'PRESENT (unexpecte
 assert ta is None, 'torchao should be uninstalled at build time'; \
 print('FULL TRAINING IMPORT CHAIN OK')"
 
-# Logging / plotting / hub
+# Logging / plotting / hub. psutil powers the in-process RSS watchdog in
+# training/train.py — without it we fall back to resource.getrusage which
+# only reports MAX RSS (no current value, no system-wide free memory),
+# which is much less useful for diagnosing slow leaks vs. sudden OOM.
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    wandb "matplotlib>=3.8" tensorboard "huggingface_hub>=0.20"
+    wandb "matplotlib>=3.8" tensorboard "huggingface_hub>=0.20" \
+    "tqdm>=4.66" "psutil>=5.9"
 
 # Env runtime deps (server side; harmless even when running training-only)
 RUN pip install --no-cache-dir \
