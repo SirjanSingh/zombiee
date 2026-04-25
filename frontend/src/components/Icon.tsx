@@ -98,4 +98,20 @@ export const Icon = {
       <path d="M7 8c2-1 8-1 10 0M7 16c2 1 8 1 10 0M5 6c-1 4-1 8 0 12 1 1 4 2 6 2 0-1-1-2-1-2M19 6c1 4 1 8 0 12-1 1-4 2-6 2 0-1 1-2 1-2" />
     </svg>
   ),
+  ArrowUpRight: ({ size, className }: P) => (
+    <svg {...base(size, className)}>
+      <line x1="7" y1="17" x2="17" y2="7" /><polyline points="7 7 17 7 17 17" />
+    </svg>
+  ),
+  Copy: ({ size, className }: P) => (
+    <svg {...base(size, className)}>
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  ),
+  Terminal: ({ size, className }: P) => (
+    <svg {...base(size, className)}>
+      <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+  ),
 };

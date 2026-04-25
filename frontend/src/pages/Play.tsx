@@ -1,15 +1,30 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Grid } from "../components/Grid";
 import { AgentRoster, BroadcastFeed, PhaseBar, PostmortemFeed } from "../components/Hud";
 import { Icon } from "../components/Icon";
-import { useEpisode } from "../hooks/useEpisode";
+import { LogsPanel } from "../components/LogsPanel";
+import { useEpisode, type EpisodeMode } from "../hooks/useEpisode";
+import { HF_SPACE_URL, checkSpaceHealth } from "../sim/remoteEngine";
 
 export default function Play() {
-  const ep = useEpisode({ seed: 42, speed: 4, autoStart: true, loopOnEnd: false });
+  const [backend, setBackend] = useState<EpisodeMode>("local");
+  const ep = useEpisode({ seed: 42, speed: 4, autoStart: true, loopOnEnd: false, mode: backend });
   const [fog, setFog] = useState(true);
   const [speed, setSpeed] = useState(4);
   const [seedInput, setSeedInput] = useState("42");
-  const [backend, setBackend] = useState<"local" | "colab" | "dgx">("local");
+  const [spaceHealth, setSpaceHealth] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null);
+
+  // Probe the HF Space once on mount + every 30s while remote is selected.
+  useEffect(() => {
+    let cancelled = false;
+    const ping = async () => {
+      const r = await checkSpaceHealth();
+      if (!cancelled) setSpaceHealth(r);
+    };
+    void ping();
+    const id = setInterval(ping, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   const handleSpeed = (s: number) => { setSpeed(s); ep.setSpeed(s); };
   const handleReset = () => {
@@ -24,12 +39,31 @@ export default function Play() {
           <div className="mono-label">/play · interactive episode</div>
           <h1 className="mt-1 text-3xl font-display tracking-tight">Run the environment</h1>
           <p className="text-ink-2 mt-1 text-sm max-w-xl">
-            The same engine that powers training — recompiled to TypeScript so you can step through it in your browser
-            with no GPU. Toggle <em>fog</em> to hide the infected role from the audience.
+            {backend === "remote" ? (
+              <>
+                Driving the deployed Hugging Face Space. Every action is a real{" "}
+                <code className="font-mono text-[12px] bg-bg-0/60 px-1.5 py-0.5 rounded">POST /step</code>{" "}
+                — see the live log below to verify against the Space's container logs.
+              </>
+            ) : (
+              <>
+                The same engine that powers training — recompiled to TypeScript so you can step
+                through it in your browser with no GPU. Toggle <em>fog</em> to hide the infected
+                role from the audience.
+              </>
+            )}
           </p>
         </div>
-        <BackendPicker backend={backend} onChange={setBackend} />
+        <BackendPicker backend={backend} onChange={setBackend} health={spaceHealth} />
       </div>
+      {ep.error && backend === "remote" && (
+        <div className="panel p-3 mb-4 border border-neon-rose/40 text-xs font-mono text-neon-rose">
+          remote error: {ep.error} — switch back to "Browser engine" to keep playing.
+        </div>
+      )}
+      {backend === "remote" && !ep.error && (
+        <VerifyCallout />
+      )}
 
       <div className="grid lg:grid-cols-[auto_1fr] gap-6 items-start">
         <div className="panel p-4 sm:p-6">
@@ -67,6 +101,10 @@ export default function Play() {
           </div>
           <ApiPreview state={ep.state} />
         </div>
+      </div>
+
+      <div className="mt-6">
+        <LogsPanel active={backend === "remote"} />
       </div>
 
       <EndCard state={ep.state} onReset={handleReset} />
@@ -126,47 +164,118 @@ function Controls({
   );
 }
 
-function BackendPicker({ backend, onChange }: { backend: string; onChange: (b: any) => void }) {
-  const opts = [
-    { key: "local", label: "Browser engine", desc: "TS port · 0 GPU" },
-    { key: "colab", label: "Colab tunnel", desc: "T4 · LLM inference" },
-    { key: "dgx", label: "DGX endpoint", desc: "A100/H100 · prod" },
+function BackendPicker({
+  backend, onChange, health,
+}: {
+  backend: EpisodeMode;
+  onChange: (b: EpisodeMode) => void;
+  health: { ok: boolean; latencyMs?: number; error?: string } | null;
+}) {
+  const opts: {
+    key: EpisodeMode; label: string; desc: string; icon: typeof Icon.Cpu;
+  }[] = [
+    {
+      key: "local", icon: Icon.Cpu,
+      label: "Browser engine",
+      desc: "TS port of the env · runs offline · 0 GPU",
+    },
+    {
+      key: "remote", icon: Icon.HuggingFace,
+      label: "Hugging Face Space",
+      desc: `${HF_SPACE_URL} · OpenEnv-compliant FastAPI`,
+    },
   ];
+  const dot = health == null
+    ? "bg-ink-3"
+    : health.ok ? "bg-neon-lime animate-pulse" : "bg-neon-rose";
+  const statusText = health == null
+    ? "probing…"
+    : health.ok
+      ? `space online · ${health.latencyMs ?? "?"}ms`
+      : `space offline${health.error ? ` (${health.error})` : ""}`;
   return (
-    <div className="panel p-3 flex items-center gap-2">
-      <Icon.Cpu size={16} className="text-neon-purple" />
-      {opts.map(o => (
-        <button key={o.key} onClick={() => onChange(o.key)}
-          className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
-            backend === o.key
-              ? "bg-neon-violet/25 text-ink-0 border border-neon-violet/40"
-              : "text-ink-2 hover:bg-ink-4/20 border border-transparent"
-          }`}
-          title={o.desc}>
-          {o.label}
-        </button>
-      ))}
+    <div className="panel p-3 flex flex-wrap items-center gap-2">
+      <Icon.Network size={14} className="text-neon-purple shrink-0" />
+      <span className="mono-label text-[10px] mr-1">backend</span>
+      {opts.map((o) => {
+        const IconC = o.icon;
+        const disabled = o.key === "remote" && health != null && !health.ok;
+        return (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            disabled={disabled}
+            className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors inline-flex items-center gap-2 ${
+              backend === o.key
+                ? "bg-neon-violet/25 text-ink-0 border border-neon-violet/40 shadow-[0_0_18px_-6px_rgba(167,139,250,0.6)]"
+                : "text-ink-2 hover:bg-ink-4/20 border border-transparent"
+            } ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
+            title={o.desc}
+          >
+            <IconC size={13} />
+            {o.label}
+          </button>
+        );
+      })}
+      <span className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-mono text-ink-2">
+        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+        {statusText}
+      </span>
     </div>
   );
 }
 
 function ApiPreview({ state }: { state: any }) {
-  const lastBroadcast = state.broadcasts[state.broadcasts.length - 1];
-  const sampleAction = lastBroadcast
-    ? { agent_id: lastBroadcast.agentId, action_type: "broadcast", message: lastBroadcast.text }
-    : { agent_id: state.step % 3, action_type: "move_right" };
+  // Pull the latest captured event for an honest preview. Falls back to a
+  // best-guess synthetic if nothing's been logged yet (e.g. first frame).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const last = (typeof window !== "undefined" ? (window as any).__zombiee_log : null) as
+    | { kind: string; req?: unknown; res?: unknown }[] | null;
+  const lastStep = last?.slice().reverse().find(e => e.kind === "step");
+  const sampleAction = lastStep?.req ?? { agent_id: state.step % 3, action_type: "move_right" };
+  const sampleResp = lastStep?.res ?? {
+    step_count: state.step,
+    current_agent_id: (state.step + 1) % 3,
+    reward: 0.01,
+    done: state.done,
+    phase: state.phase,
+  };
   return (
     <div className="panel p-4">
-      <div className="mono-label mb-3">openenv api · last step</div>
+      <div className="flex items-center justify-between mb-3">
+        <div className="mono-label">openenv api · last step</div>
+        <span className="text-[10px] font-mono text-ink-3">{lastStep ? "live capture" : "synthetic"}</span>
+      </div>
       <div className="grid md:grid-cols-2 gap-3">
         <CodeBlock title="POST /step" body={JSON.stringify(sampleAction, null, 2)} accent="rose" />
-        <CodeBlock title="response · observation" body={JSON.stringify({
-          step_count: state.step,
-          phase: state.phase,
-          done: state.done,
-          reward: 0.5 + (state.agents[0].alive ? 0.05 : -0.5),
-          metadata: { current_agent_id: (state.step + 1) % 3, healthy_alive: state.agents.filter((a:any)=>a.alive && !a.infected).length },
-        }, null, 2)} accent="cyan" />
+        <CodeBlock title="response · observation" body={JSON.stringify(sampleResp, null, 2)} accent="cyan" />
+      </div>
+    </div>
+  );
+}
+
+// Compact judge-friendly callout that appears when remote mode is active.
+// Tells the viewer where to look to verify the demo is real.
+function VerifyCallout() {
+  return (
+    <div className="panel p-3 mb-4 border border-neon-violet/30 bg-neon-violet/5">
+      <div className="flex flex-wrap items-center gap-3 text-[12px]">
+        <Icon.Terminal size={14} className="text-neon-violet shrink-0" />
+        <span className="text-ink-1">
+          <span className="font-semibold">Live remote mode.</span>{" "}
+          Every action below is a real <code className="font-mono text-[11px] bg-bg-0/60 px-1.5 py-0.5 rounded">POST /step</code> against{" "}
+          <a href={HF_SPACE_URL} target="_blank" rel="noopener noreferrer"
+             className="font-mono text-neon-violet hover:underline">
+            noanya/zombiee
+          </a>.
+        </span>
+        <span className="ml-auto text-ink-3 text-[11px] font-mono">
+          Scroll down to compare the network log against the Space's <a
+            href="https://huggingface.co/spaces/noanya/zombiee/logs/container"
+            target="_blank" rel="noopener noreferrer"
+            className="underline hover:text-ink-1"
+          >container logs ↗</a>
+        </span>
       </div>
     </div>
   );

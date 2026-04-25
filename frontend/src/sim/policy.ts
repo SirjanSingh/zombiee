@@ -1,4 +1,4 @@
-import { FOOD, GRID_COLS, GRID_ROWS, isSafehouse, isWall, inBounds } from "./layout";
+import { FOOD, isSafehouse, isWall, inBounds } from "./layout";
 import { RNG } from "./rng";
 import type { Action, ActionType, Agent, EpisodeState, Zombie } from "./types";
 

@@ -1,6 +1,5 @@
 import {
   AGENT_SPAWNS, ZOMBIE_SPAWNS,
-  GRID_ROWS, GRID_COLS,
   isWall, isFood, isSafehouse, inBounds,
 } from "./layout";
 import { RNG } from "./rng";
