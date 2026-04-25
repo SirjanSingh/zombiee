@@ -392,23 +392,31 @@ def create_reward_fn():
                 action_types.append("ERROR")
                 rollout_lens.append(0)
 
-        # Diagnostics — this is the line you tail in the log to see learning
-        try:
-            r_mean = statistics.mean(rewards)
-            r_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
-            ro_mean = statistics.mean(rollout_lens) if rollout_lens else 0.0
-        except statistics.StatisticsError:
-            r_mean = r_std = ro_mean = 0.0
-        action_dist = Counter(action_types).most_common(6)
-        action_dist_str = ", ".join(f"{a}={c}" for a, c in action_dist)
-        logger.info(
-            f"reward_fn #{state['calls']}: n={n} "
-            f"parse_ok={parse_ok_count}/{n} "
-            f"r[mean={r_mean:+.3f} std={r_std:.3f} min={min(rewards):+.3f} max={max(rewards):+.3f}] "
-            f"avg_rollout={ro_mean:.0f} "
-            f"actions[{action_dist_str}] "
-            f"errs={state['errors']}"
-        )
+        # Diagnostics — this is the line you tail in the log to see learning.
+        # Guard against empty `rewards` (TRL shouldn't call us with n=0 but we
+        # keep the failure mode local rather than crashing the trainer).
+        if rewards:
+            try:
+                r_mean = statistics.mean(rewards)
+                r_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
+                ro_mean = statistics.mean(rollout_lens) if rollout_lens else 0.0
+            except statistics.StatisticsError:
+                r_mean = r_std = ro_mean = 0.0
+            r_min, r_max = min(rewards), max(rewards)
+            action_dist = Counter(action_types).most_common(6)
+            action_dist_str = ", ".join(f"{a}={c}" for a, c in action_dist)
+            logger.info(
+                f"reward_fn #{state['calls']}: n={n} "
+                f"parse_ok={parse_ok_count}/{n} "
+                f"r[mean={r_mean:+.3f} std={r_std:.3f} min={r_min:+.3f} max={r_max:+.3f}] "
+                f"avg_rollout={ro_mean:.0f} "
+                f"actions[{action_dist_str}] "
+                f"errs={state['errors']}"
+            )
+        else:
+            logger.warning(
+                f"reward_fn #{state['calls']}: empty completions batch — nothing to score."
+            )
         return rewards
 
     return reward_fn
