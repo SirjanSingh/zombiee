@@ -43,8 +43,13 @@ train = [
     "accelerate==1.1.1",
     "peft==0.13.2",
     "datasets==3.1.0",
-    "trl==0.13.0",
+    "trl==0.15.2",
     "bitsandbytes>=0.43",
+    # trl 0.15+ chain-imports mergekit + llm_blender unconditionally.
+    # Without these, `from trl import GRPOTrainer` raises ModuleNotFoundError.
+    # We don't actually use merge or judge functionality.
+    "mergekit",
+    "llm-blender",
     "matplotlib>=3.8",
     "numpy>=1.24",
     "huggingface_hub>=0.20",
