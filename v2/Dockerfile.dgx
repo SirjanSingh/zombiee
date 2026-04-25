@@ -1,0 +1,144 @@
+# SurviveCity v2 — DGX training container.
+#
+# Mirrors v1/Dockerfile.dgx (the known-good stack we used on DGX in April 2026)
+# with v2 paths and port 7861. The pin set below was chosen because:
+#
+#   * torch==2.5.1 (cu121)              — last torch that bundles the inductor
+#                                         submodule unsloth_zoo's import chain
+#                                         requires, AND has cuDNN built-ins
+#                                         supporting Ampere/Hopper bf16 fast paths.
+#   * transformers==4.40.2              — TRL 0.8.6 was tested against this minor.
+#   * peft==0.10.0                      — adapter file layout matches what v1's
+#                                         eval cells expect.
+#   * trl==0.8.6                        — GRPOTrainer API stable here; >=0.15
+#                                         needs the warnings_issued shim.
+#   * datasets==2.19.1, accelerate==0.30.1
+#   * bitsandbytes>=0.41                — 4-bit nf4 path (only needed if you DON'T
+#                                         pass --no-4bit to training/train.py).
+#   * unsloth[cu121-torch250] (git)     — fast kernels (Ampere+ only — A100/H100).
+#                                         Skip with UNSLOTH_DISABLE=1 to use the
+#                                         transformers+peft fallback in train.py.
+#   * torchao==0.7.0  ★ CRITICAL PIN ★  — newer torchao (>=0.8) references
+#                                         torch.int1 (only present in torch 2.6+).
+#                                         transformers/quantizers/auto.py imports
+#                                         torchao eagerly, so without this pin the
+#                                         very first `import transformers` raises
+#                                         AttributeError. We force-reinstall after
+#                                         transformers to override whatever pip
+#                                         resolved earlier.
+#
+# This image runs TRAINING by default (uses the local v2 SurviveCityV2Env in
+# the GRPO reward function — no HTTP server required during training). The
+# server side of v2 lives in the slim Dockerfile and is only needed for OpenEnv
+# submission / external evaluation.
+
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-dev python3.11-venv python3-pip git curl gcc \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org
+
+# torch first (large download, isolate the failure point)
+RUN pip install --no-cache-dir \
+    torch==2.5.1 torchvision \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    --trusted-host download.pytorch.org
+
+# Core training stack — exact pins from the v1 DGX run that worked
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "transformers==4.40.2" \
+    "accelerate==0.30.1" \
+    "peft==0.10.0" \
+    "datasets==2.19.1" \
+    "trl==0.8.6"
+
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "bitsandbytes>=0.41"
+
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
+
+# Pin torchao to 0.7.0 — last release compatible with torch 2.5.x.
+# Newer torchao (>=0.8) references torch.int1 (only present in torch 2.6+),
+# and transformers/quantizers/auto.py imports torchao eagerly at module load,
+# breaking `import unsloth` / `import transformers` with AttributeError.
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "torchao==0.7.0"
+
+# Sanity-check the import chain so the build fails fast if torchao regresses.
+# Skip `import unsloth` here — unsloth_zoo runs a CUDA-availability probe at
+# import time, and `docker build` has no GPU exposed (only `docker run --gpus`).
+# The real regression we are guarding against is transformers/quantizers/auto.py
+# eagerly importing torchao and hitting `torch.int1`, so we exercise that path.
+RUN python -c "import torch, torchao, transformers; \
+from transformers.processing_utils import Unpack; \
+from transformers.quantizers.auto import AutoHfQuantizer; \
+print('torch', torch.__version__); \
+print('torchao', torchao.__version__); \
+print('transformers', transformers.__version__); \
+print('quantizer import chain ok')"
+
+# Logging / plotting / hub
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    wandb "matplotlib>=3.8" tensorboard "huggingface_hub>=0.20"
+
+# Env runtime deps (server side; harmless even when running training-only)
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "pydantic>=2.0" "fastapi>=0.104" "uvicorn[standard]>=0.24"
+
+# Source — copy after deps so iterative edits don't bust the dep cache
+COPY survivecity_v2_env/ survivecity_v2_env/
+COPY server/             server/
+COPY training/           training/
+COPY openenv.yaml        ./
+COPY pyproject.toml      ./
+
+# Local checkpoint dir (trained LoRAs, optimizer state); mount this as a
+# volume in `docker run` so checkpoints survive container restarts.
+RUN mkdir -p /app/checkpoints /app/eval_results /app/results
+
+EXPOSE 7861
+
+# Default CMD: run training. Override at `docker run` time for one-off eval /
+# server / simulator launches. The training script uses the local v2
+# SurviveCityV2Env in its GRPO reward function — no in-container HTTP needed.
+#
+# DGX-friendly defaults (30 GB VRAM Ampere/Hopper):
+#   --no-4bit     run base in bf16 (cleaner gradients than 4-bit nf4)
+#   --num-generations 8
+#   --lora-r 32 --lora-alpha 64
+#
+# To enable Hub push, pass --push-to-hub --hub-model-id <user>/zombiee-v2 and
+# also set HUGGINGFACE_TOKEN at `docker run -e HUGGINGFACE_TOKEN=...`.
+CMD ["bash", "-c", "\
+echo '=== SurviveCity v2 DGX training ===' && \
+echo \"GPU info:\" && \
+nvidia-smi -L || true && \
+python -m training.train \
+    --model-name Qwen/Qwen2.5-3B-Instruct \
+    --max-steps 200 \
+    --save-steps 25 \
+    --output-dir /app/checkpoints \
+    --num-generations 8 \
+    --lora-r 32 \
+    --lora-alpha 64 \
+    --max-seq-length 4096 \
+    --no-4bit \
+    --report-to tensorboard \
+"]

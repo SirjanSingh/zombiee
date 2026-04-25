@@ -30,8 +30,46 @@ pip install -e v2/[train,unsloth]    # if you want Unsloth fast kernels (Ampere+
 
 ## Train on DGX (30 GB VRAM)
 
+### Containerised (recommended — uses the DGX-tested pin set)
+
+```bash
+# Build (re-uses the v1 DGX pin set: torch 2.5.1+cu121, transformers 4.40.2,
+# peft 0.10.0, trl 0.8.6, torchao==0.7.0). See v2/Dockerfile.dgx for why each
+# pin matters — particularly the torchao 0.7.0 force-reinstall.
+docker build -f v2/Dockerfile.dgx -t survivecity-v2-dgx v2/
+
+# Run training. Mount checkpoints/ and eval_results/ as volumes so artefacts
+# survive container restarts. Pass HUGGINGFACE_TOKEN if pushing to Hub.
+docker run --rm --gpus all \
+    -e HUGGINGFACE_TOKEN=$HF_TOKEN \
+    -v "$(pwd)/v2/checkpoints:/app/checkpoints" \
+    -v "$(pwd)/v2/eval_results:/app/eval_results" \
+    survivecity-v2-dgx
+```
+
+The container's default CMD launches training with DGX-friendly defaults
+(bf16, num_generations=8, LoRA r=32 α=64, --no-4bit). Override the CMD to
+push to Hub:
+
+```bash
+docker run --rm --gpus all \
+    -e HUGGINGFACE_TOKEN=$HF_TOKEN \
+    -v "$(pwd)/v2/checkpoints:/app/checkpoints" \
+    survivecity-v2-dgx \
+    python -m training.train \
+        --max-steps 200 --save-steps 25 \
+        --num-generations 8 --lora-r 32 --lora-alpha 64 \
+        --no-4bit \
+        --push-to-hub --hub-model-id <user>/zombiee-v2 \
+        --resume-from-checkpoint auto
+```
+
+### Bare-metal (if your DGX is set up directly)
+
 ```bash
 cd v2
+pip install -e .[train]            # pinned stack (see pyproject.toml [train])
+pip install -e .[train,unsloth]    # add Unsloth fast kernels (Ampere+)
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \
     --max-steps 200 \
@@ -41,6 +79,7 @@ python -m training.train \
     --lora-r 32 \
     --lora-alpha 64 \
     --max-seq-length 4096 \
+    --no-4bit \
     --push-to-hub --hub-model-id <user>/zombiee-v2 \
     --resume-from-checkpoint auto
 ```

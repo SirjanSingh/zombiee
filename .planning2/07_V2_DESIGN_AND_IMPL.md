@@ -38,9 +38,19 @@ what enables the planned transfer-learning experiment.
 
 ```
 v2/
-├── pyproject.toml         name="survivecity-v2", optional deps: [train], [unsloth], [dev]
+├── pyproject.toml         name="survivecity-v2"; [train] pinned to the DGX-tested
+│                          set (torch 2.5.1+cu121, transformers 4.40.2, peft 0.10.0,
+│                          trl 0.8.6, datasets 2.19.1, accelerate 0.30.1, bnb >=0.41,
+│                          torchao==0.7.0); [unsloth] = unsloth git@cu121-torch250
 ├── README.md              install / train / eval / simulate quick-start
-├── Dockerfile             slim FastAPI server image (env-only; training is NOT containerised here)
+├── Dockerfile             slim FastAPI server image (env-only, port 7861;
+│                          for OpenEnv submission and external evaluators)
+├── Dockerfile.dgx         FULL DGX training container — CUDA 12.1.1-devel base,
+│                          known-good pin set mirrored from v1/Dockerfile.dgx,
+│                          torchao 0.7.0 force-reinstalled to dodge the torch.int1
+│                          regression, sanity-checked import chain at build time.
+│                          Default CMD runs `training.train` with DGX-friendly
+│                          flags (bf16, num_generations=8, LoRA r=32 α=64, --no-4bit).
 ├── openenv.yaml           OpenEnv submission manifest (port 7861)
 ├── .gitignore             excludes checkpoints/ adapter_*, eval_results/*.json/*.png, results/transcripts/
 ├── checkpoints/.gitkeep   local LoRA storage
@@ -142,10 +152,32 @@ and asserts identical (step, reward, n_alive, n_zombies, n_bites) trajectory.
 
 ## How to use (cheatsheet)
 
-### Train on DGX (30 GB VRAM)
+### Train on DGX (30 GB VRAM) — containerised (preferred)
+
+The pin set in `v2/Dockerfile.dgx` is mirrored from `v1/Dockerfile.dgx` (which
+the team validated on DGX in April 2026). The CRITICAL pin is
+`torchao==0.7.0` — it must be force-reinstalled AFTER transformers, otherwise
+`torch.int1` references in newer torchao crash `import transformers`.
+
+```bash
+docker build -f v2/Dockerfile.dgx -t survivecity-v2-dgx v2/
+docker run --rm --gpus all \
+    -e HUGGINGFACE_TOKEN=$HF_TOKEN \
+    -v "$(pwd)/v2/checkpoints:/app/checkpoints" \
+    -v "$(pwd)/v2/eval_results:/app/eval_results" \
+    survivecity-v2-dgx
+```
+
+Default CMD trains with bf16 base (no 4-bit), num_generations=8, LoRA r=32
+α=64, max_steps=200, save_steps=25. Override the CMD to add `--push-to-hub
+--hub-model-id <user>/zombiee-v2 --resume-from-checkpoint auto`.
+
+### Train on DGX bare-metal
 
 ```bash
 cd v2
+pip install -e .[train]            # exact pin set (no Unsloth)
+pip install -e .[train,unsloth]    # + Unsloth fast kernels (Ampere+ only)
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \
     --max-steps 200 \
@@ -154,6 +186,7 @@ python -m training.train \
     --num-generations 8 \
     --lora-r 32 --lora-alpha 64 \
     --max-seq-length 4096 \
+    --no-4bit \
     --push-to-hub --hub-model-id <user>/zombiee-v2 \
     --resume-from-checkpoint auto
 ```
