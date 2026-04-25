@@ -1,36 +1,36 @@
 # SurviveCity v2 — DGX training container.
 #
-# Mirrors v1/Dockerfile.dgx (the known-good stack we used on DGX in April 2026)
-# with v2 paths and port 7861. The pin set below was chosen because:
+# DEPENDENCY HISTORY (read this if you wonder why we chose this stack):
 #
-#   * torch==2.5.1 (cu121)              — last torch that bundles the inductor
-#                                         submodule unsloth_zoo's import chain
-#                                         requires, AND has cuDNN built-ins
-#                                         supporting Ampere/Hopper bf16 fast paths.
-#   * transformers==4.40.2              — TRL 0.8.6 was tested against this minor.
-#   * peft==0.10.0                      — adapter file layout matches what v1's
-#                                         eval cells expect.
-#   * trl==0.8.6                        — GRPOTrainer API stable here; >=0.15
-#                                         needs the warnings_issued shim.
-#   * datasets==2.19.1, accelerate==0.30.1
-#   * bitsandbytes>=0.41                — 4-bit nf4 path (only needed if you DON'T
-#                                         pass --no-4bit to training/train.py).
-#   * unsloth[cu121-torch250] (git)     — fast kernels (Ampere+ only — A100/H100).
-#                                         Skip with UNSLOTH_DISABLE=1 to use the
-#                                         transformers+peft fallback in train.py.
-#   * torchao==0.7.0  ★ CRITICAL PIN ★  — newer torchao (>=0.8) references
-#                                         torch.int1 (only present in torch 2.6+).
-#                                         transformers/quantizers/auto.py imports
-#                                         torchao eagerly, so without this pin the
-#                                         very first `import transformers` raises
-#                                         AttributeError. We force-reinstall after
-#                                         transformers to override whatever pip
-#                                         resolved earlier.
+# We tried mirroring v1's Dockerfile.dgx (transformers 4.40.2 + peft 0.10.0 +
+# trl 0.8.6 + Unsloth git head + torchao 0.7.0) and hit FOUR cascading
+# dependency failures in sequence:
 #
-# This image runs TRAINING by default (uses the local v2 SurviveCityV2Env in
-# the GRPO reward function — no HTTP server required during training). The
-# server side of v2 lives in the slim Dockerfile and is only needed for OpenEnv
-# submission / external evaluation.
+#   1. peft >=0.13 (pulled in by Unsloth) demands torchao >= 0.16.0 in
+#      `is_torchao_available()`, but torch 2.5 can only have torchao <= 0.7.
+#      → Fixed by uninstalling torchao entirely.
+#   2. trl 0.15+ chain-imports `mergekit` from callbacks.py unconditionally.
+#      → Fixed by `pip install mergekit`.
+#   3. trl 0.15+ also chain-imports `llm_blender` from judges.py.
+#      → Tried `pip install llm-blender`, but...
+#   4. ...the latest `llm_blender` is built against an older transformers API
+#      (`from transformers.utils.hub import TRANSFORMERS_CACHE` — that
+#      constant was renamed to `HF_HUB_CACHE` in modern transformers).
+#      `llm_blender` simply does not import in our env.
+#
+# The root cause: Unsloth's git head pulls bleeding-edge `transformers/peft/trl`,
+# and `trl` 0.15+ has unconditional optional-integration imports that the
+# rest of the ecosystem hasn't caught up with.
+#
+# DECISION: drop Unsloth, pin a clean modern stack centered on **trl 0.13.0**
+# — the first version with GRPOTrainer, but BEFORE the judges/mergekit
+# unconditional imports were added. This sidesteps the entire mergekit /
+# llm_blender mess while still giving us GRPO.
+#
+# Tradeoff: lose Unsloth's fast kernels (~20-30% slower per step). For our
+# 15-step / 12-hour run, this is fine — even with the slowdown we finish in
+# ~8h on A100. The transformers + peft fallback path in train.py handles
+# everything Unsloth would have done.
 
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
@@ -48,71 +48,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m pip install --upgrade pip setuptools wheel \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org
 
-# torch first (large download, isolate the failure point)
+# torch first (large download — isolate it for cache hits on iterations)
 RUN pip install --no-cache-dir \
     torch==2.5.1 torchvision \
     --index-url https://download.pytorch.org/whl/cu121 \
     --trusted-host download.pytorch.org
 
-# Core training stack — exact pins from the v1 DGX run that worked
-RUN pip install --no-cache-dir \
-    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "transformers==4.40.2" \
-    "accelerate==0.30.1" \
-    "peft==0.10.0" \
-    "datasets==2.19.1" \
-    "trl==0.8.6"
-
-RUN pip install --no-cache-dir \
-    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "bitsandbytes>=0.41"
-
-RUN pip install --no-cache-dir \
-    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
-
-# TRL 0.15+ has a cascade of "optional" integrations that are imported
-# unconditionally in the GRPOTrainer load path. Each one takes a moment to
-# discover via the smoke test (lines further down). Known list as of
-# 2026-04-25 — install all of them so `from trl import GRPOTrainer` works:
+# Core training stack — clean modern set, mutually compatible.
 #
-#   trl/trainer/grpo_trainer.py
-#       -> callbacks.py
-#           -> mergekit_utils.py     -> import mergekit
-#           -> judges.py             -> import llm_blender
+# trl==0.13.0 is the SWEET SPOT: it has GRPOTrainer (added Jan 2025), but
+# does NOT have the judges.py + mergekit_utils.py unconditional imports
+# that landed in trl 0.15+. So `from trl import GRPOTrainer` works without
+# any of the optional-integration packages installed.
 #
-# We don't actually use merge OR judge functionality; these are dead-weight
-# imports for our code path. But TRL doesn't gate them, so we have to ship
-# them. (Alternative: pin trl to <=0.13.x, but that risks breaking the
-# Unsloth-installed transformers/peft compat. Easier to just install.)
+# transformers/peft/accelerate/datasets are the versions trl 0.13 was
+# tested against in its release CI. Don't bump these without re-testing
+# the full stack.
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "mergekit" \
-    "llm-blender"
+    "transformers==4.45.2" \
+    "accelerate==0.34.2" \
+    "peft==0.13.2" \
+    "datasets==3.0.1" \
+    "trl==0.13.0"
 
-# torchao gymnastics, take 2:
-#
-#   * Newer torchao (>=0.8) references `torch.int1` which only exists in
-#     torch 2.6+. transformers/quantizers/auto.py imports torchao eagerly, so
-#     a torchao install on torch 2.5 raises AttributeError at module load.
-#   * The "obvious" fix — pinning torchao==0.7.0 — works for `import transformers`
-#     but trips peft >=0.13's `is_torchao_available()` strict check, which DEMANDS
-#     torchao >= 0.16.0. peft fires this check pre-emptively in every LoRA
-#     dispatcher chain even when no torchao layers are present in the model.
-#   * We don't actually USE torchao quantisation (we train in bf16). So the
-#     correct move is to UNINSTALL torchao entirely. transformers' eager import
-#     is wrapped in try/except ImportError; an absent torchao module returns
-#     None and everything downstream falls back to the standard path. peft's
-#     is_torchao_available() returns False cleanly (no exception), and
-#     dispatch_torchao gets skipped in favour of the Linear dispatcher for
-#     q,k,v,o_proj — which is what we want.
+# 4-bit quantisation (only used when train.py runs WITHOUT --no-4bit).
+# Our default DGX run uses --no-4bit (bf16 base on Ampere+) but we install
+# bnb anyway so users with smaller GPUs / VRAM-constrained setups have
+# the option.
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "bitsandbytes>=0.43"
+
+# Belt-and-suspenders: ensure torchao is NOT installed. Even though we
+# pinned modest versions of transformers/peft above, a future pip resolver
+# tweak might pull torchao in as a transitive. Our model is bf16, no
+# torchao quant — drop the module entirely so peft's strict version check
+# never fires.
 RUN pip uninstall -y torchao || true
 
-# Full-path sanity check: simulate the EXACT imports `training/train.py` uses,
-# so any future transitive-dep regression fails `docker build` instead of
-# crashing the actual 12-hour training run. We skip `import unsloth` (its
-# CUDA probe needs a GPU which docker build doesn't have) but exercise every
-# OTHER module the training script touches.
+# Full-path import smoke test. Exercises the EXACT module load chain that
+# `training/train.py` triggers at runtime, so any future regression fails
+# `docker build` (15 min) instead of crashing the actual 12-hour run.
 RUN python -c "\
 import importlib.util; \
 import torch; \
@@ -122,27 +99,22 @@ import datasets; \
 import accelerate; \
 import bitsandbytes; \
 import huggingface_hub; \
+import trl; \
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig; \
 from transformers.processing_utils import Unpack; \
 from transformers.quantizers.auto import AutoHfQuantizer; \
 from peft import get_peft_model, LoraConfig, prepare_model_for_kbit_training, PeftModel; \
 from trl import GRPOTrainer, GRPOConfig; \
 ta = importlib.util.find_spec('torchao'); \
-mk = importlib.util.find_spec('mergekit'); \
-lb = importlib.util.find_spec('llm_blender'); \
 print('torch       ', torch.__version__); \
 print('transformers', transformers.__version__); \
 print('peft        ', peft.__version__); \
 print('datasets    ', datasets.__version__); \
 print('accelerate  ', accelerate.__version__); \
-import trl; print('trl         ', trl.__version__); \
+print('trl         ', trl.__version__); \
 print('bitsandbytes', bitsandbytes.__version__); \
 print('torchao     ', 'absent (intended)' if ta is None else 'PRESENT (unexpected)'); \
-print('mergekit    ', 'present' if mk is not None else 'ABSENT (would break trl)'); \
-print('llm_blender ', 'present' if lb is not None else 'ABSENT (would break trl judges)'); \
 assert ta is None, 'torchao should be uninstalled at build time'; \
-assert mk is not None, 'mergekit must be installed for trl GRPO imports'; \
-assert lb is not None, 'llm_blender must be installed for trl GRPO imports (judges chain)'; \
 print('FULL TRAINING IMPORT CHAIN OK')"
 
 # Logging / plotting / hub
@@ -162,37 +134,34 @@ COPY training/           training/
 COPY openenv.yaml        ./
 COPY pyproject.toml      ./
 
-# Local checkpoint dir (trained LoRAs, optimizer state); mount this as a
-# volume in `docker run` so checkpoints survive container restarts.
+# Runtime dirs (LoRAs, optimizer state, eval results, simulator transcripts).
+# Mount these as volumes in `docker run` so they survive container restarts.
 RUN mkdir -p /app/checkpoints /app/eval_results /app/results
 
 EXPOSE 7861
 
-# Default CMD: run training. Override at `docker run` time for one-off eval /
-# server / simulator launches. The training script uses the local v2
-# SurviveCityV2Env in its GRPO reward function — no in-container HTTP needed.
+# Default CMD launches a 15-step training run with all the v2 defaults,
+# fitting comfortably in a 12-hour DGX session.
 #
-# DGX defaults (30 GB VRAM Ampere/Hopper) — saturate the GPU for GRPO,
-# fit in a 12-hour session, save every step:
-#   --max-steps 15                     15 steps total (~6h on A100, ~12h on V100)
-#   --save-steps 1                     checkpoint after every single step (15 saves)
-#   --save-total-limit 15              keep all 15 on disk + Hub (~450 MB)
+#   --max-steps 15                     15 steps total
+#   --save-steps 1                     checkpoint every step → 15 saves
+#   --save-total-limit 15              keep all 15 on disk + Hub
 #   --num-generations 12               bigger group → stronger GRPO gradient
-#   --grad-accum-steps 4               48 generations evaluated per gradient update
+#   --grad-accum-steps 4               48 generations evaluated per update
 #   --max-completion-length 512        more tokens per response
-#   --no-4bit                          bf16 base (cleaner grads than 4-bit nf4)
+#   --no-4bit                          bf16 base (cleaner grads than nf4)
 #   --gradient-checkpointing (default) lets the bigger group fit
-#   --optim adamw_torch_fused          ~3-5% throughput gain on sm_80+
-#   --vram-reserve-gb 16 (default)     holder pins remaining VRAM so co-tenants
-#                                       on shared DGX can't claim it mid-run.
-#                                       Set 0 if you own the GPU exclusively.
+#   --vram-reserve-gb 16 (default)     holder pins remaining VRAM so
+#                                       co-tenants on shared DGX can't
+#                                       claim it mid-run. Set 0 if you
+#                                       own the GPU exclusively.
 #
 # To enable Hub push, override CMD or pass extra args:
 #   docker run ... survivecity-v2-dgx <override-args>
 # and set HUGGINGFACE_TOKEN with `-e HUGGINGFACE_TOKEN=...`.
 CMD ["bash", "-c", "\
 echo '=== SurviveCity v2 DGX training (15 steps, save every step) ===' && \
-echo \"GPU info:\" && \
+echo 'GPU info:' && \
 nvidia-smi -L || true && \
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \

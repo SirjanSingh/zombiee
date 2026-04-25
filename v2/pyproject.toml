@@ -21,55 +21,41 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Pinned to the exact stack we ran on DGX for v1 (April 2026). See
-# Dockerfile.dgx for the full rationale; the short version:
-#   - torch 2.5.1 + cu121: last torch with the inductor submodule unsloth_zoo
-#     expects + Ampere/Hopper bf16 fast paths.
-#   - transformers 4.40.2 + peft 0.10.0 + trl 0.8.6 + datasets 2.19.1 +
-#     accelerate 0.30.1: the version set TRL 0.8.x's GRPOTrainer was tested
-#     against. Newer TRL (>=0.15) changes API and trips PEFT's __getattr__
-#     chain; v1's train.py worked around that with _seed_warnings_issued.
-#   - torchao 0.7.0: CRITICAL — newer torchao references torch.int1 which
-#     only exists in torch 2.6+. transformers/quantizers/auto.py imports
-#     torchao eagerly, so without this pin `import transformers` raises
-#     AttributeError on torch 2.5.x. Force this pin AFTER transformers
-#     resolves its own dep tree (see Dockerfile.dgx for the --force-reinstall
-#     --no-deps invocation).
-#   - bitsandbytes >=0.41: 4-bit nf4 path. Skip via `train.py --no-4bit` if
-#     you have the VRAM to load the base in bf16 (recommended on 30GB+).
+# Clean modern stack centered on **trl 0.13.0** — the first TRL with
+# GRPOTrainer (Jan 2025) but BEFORE the unconditional judges/mergekit
+# imports landed in trl 0.15+. See Dockerfile.dgx for the full history of
+# how we landed here (after four cascading dep failures with the v1 stack +
+# Unsloth git head).
+#
+# These versions are mutually compatible and tested by trl 0.13's release CI.
+# Don't bump without re-testing the full import chain from train.py.
+#
+#   - torch 2.5.1+cu121: V100/A100/H100-friendly, has cuDNN built-ins
+#   - transformers 4.45.2: trl 0.13 requires >= 4.45
+#   - peft 0.13.2: compatible with transformers 4.45+ and trl 0.13
+#   - trl 0.13.0: GRPOTrainer present, no judges/mergekit eager imports
+#   - bitsandbytes >= 0.43: 4-bit nf4 path (only used without --no-4bit)
+#   - torchao: NOT installed (see Dockerfile.dgx for the gory details)
+#   - Unsloth: NOT used (its git head pulls bleeding-edge TRL that breaks)
 train = [
     "torch==2.5.1",
-    "transformers==4.40.2",
-    "trl==0.8.6",
-    "peft==0.10.0",
-    "datasets==2.19.1",
-    "accelerate==0.30.1",
-    "bitsandbytes>=0.41",
-    # torchao is intentionally NOT listed — see Dockerfile.dgx for the full
-    # rationale. Short version: peft >=0.13 demands torchao >= 0.16.0 OR not
-    # installed at all. Newer torchao breaks torch 2.5 (uses torch.int1).
-    # We train in bf16 (no torchao quant), so the right answer is to leave
-    # torchao uninstalled entirely.
-    #
-    # `mergekit` and `llm-blender` are both required because TRL 0.15+
-    # imports them unconditionally via trl/trainer/callbacks.py:
-    #   - mergekit_utils.py imports mergekit
-    #   - judges.py imports llm_blender
-    # We don't use merge OR judge functionality, but without these,
-    # `from trl import GRPOTrainer` raises ModuleNotFoundError.
-    "mergekit",
-    "llm-blender",
+    "transformers==4.45.2",
+    "accelerate==0.34.2",
+    "peft==0.13.2",
+    "datasets==3.0.1",
+    "trl==0.13.0",
+    "bitsandbytes>=0.43",
     "matplotlib>=3.8",
     "numpy>=1.24",
     "huggingface_hub>=0.20",
     "tensorboard",
     "wandb",
 ]
-# Unsloth is OPTIONAL — fast kernels for Ampere+ (A100 / H100). Skip on
-# Volta / Turing or when UNSLOTH_DISABLE=1; train.py falls back to the
-# transformers + peft path automatically.
+# Unsloth's git head pulls bleeding-edge TRL/transformers/peft that break
+# in non-obvious ways (see Dockerfile.dgx history). Not recommended for v2.
+# If you must use it, install separately and accept the dep risk.
 unsloth = [
-    "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git",
+    "unsloth",
 ]
 dev = [
     "pytest>=7.4",
