@@ -47,9 +47,11 @@ docker run --rm --gpus all \
     survivecity-v2-dgx
 ```
 
-The container's default CMD launches training with DGX-friendly defaults
-(bf16, num_generations=8, LoRA r=32 α=64, --no-4bit). Override the CMD to
-push to Hub:
+The container's default CMD launches training with DGX-saturating defaults:
+**100 steps, save every 10 steps (10 checkpoints total), num_generations=12,
+LoRA r=32 α=64, max_completion_length=512, gradient checkpointing on, bf16
+base (--no-4bit), adamw_torch_fused optimizer**. Override the CMD to push
+to Hub:
 
 ```bash
 docker run --rm --gpus all \
@@ -57,8 +59,10 @@ docker run --rm --gpus all \
     -v "$(pwd)/v2/checkpoints:/app/checkpoints" \
     survivecity-v2-dgx \
     python -m training.train \
-        --max-steps 200 --save-steps 25 \
-        --num-generations 8 --lora-r 32 --lora-alpha 64 \
+        --max-steps 100 --save-steps 10 --save-total-limit 10 \
+        --num-generations 12 --grad-accum-steps 4 \
+        --max-completion-length 512 \
+        --lora-r 32 --lora-alpha 64 \
         --no-4bit \
         --push-to-hub --hub-model-id <user>/zombiee-v2 \
         --resume-from-checkpoint auto
@@ -72,12 +76,14 @@ pip install -e .[train]            # pinned stack (see pyproject.toml [train])
 pip install -e .[train,unsloth]    # add Unsloth fast kernels (Ampere+)
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \
-    --max-steps 200 \
-    --save-steps 25 \
+    --max-steps 100 \
+    --save-steps 10 \
+    --save-total-limit 10 \
     --output-dir ./checkpoints \
-    --num-generations 8 \
-    --lora-r 32 \
-    --lora-alpha 64 \
+    --num-generations 12 \
+    --grad-accum-steps 4 \
+    --max-completion-length 512 \
+    --lora-r 32 --lora-alpha 64 \
     --max-seq-length 4096 \
     --no-4bit \
     --push-to-hub --hub-model-id <user>/zombiee-v2 \

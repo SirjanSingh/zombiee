@@ -168,9 +168,11 @@ docker run --rm --gpus all \
     survivecity-v2-dgx
 ```
 
-Default CMD trains with bf16 base (no 4-bit), num_generations=8, LoRA r=32
-α=64, max_steps=200, save_steps=25. Override the CMD to add `--push-to-hub
---hub-model-id <user>/zombiee-v2 --resume-from-checkpoint auto`.
+Default CMD saturates the DGX for GRPO: bf16 base (no 4-bit),
+num_generations=12, grad_accum=4 (48 generations evaluated per step),
+max_completion_length=512, gradient checkpointing on, optim=adamw_torch_fused,
+max_steps=100, save_steps=10, save_total_limit=10. Override the CMD to add
+`--push-to-hub --hub-model-id <user>/zombiee-v2 --resume-from-checkpoint auto`.
 
 ### Train on DGX bare-metal
 
@@ -180,10 +182,13 @@ pip install -e .[train]            # exact pin set (no Unsloth)
 pip install -e .[train,unsloth]    # + Unsloth fast kernels (Ampere+ only)
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \
-    --max-steps 200 \
-    --save-steps 25 \
+    --max-steps 100 \
+    --save-steps 10 \
+    --save-total-limit 10 \
     --output-dir ./checkpoints \
-    --num-generations 8 \
+    --num-generations 12 \
+    --grad-accum-steps 4 \
+    --max-completion-length 512 \
     --lora-r 32 --lora-alpha 64 \
     --max-seq-length 4096 \
     --no-4bit \

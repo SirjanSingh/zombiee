@@ -119,23 +119,33 @@ EXPOSE 7861
 # server / simulator launches. The training script uses the local v2
 # SurviveCityV2Env in its GRPO reward function — no in-container HTTP needed.
 #
-# DGX-friendly defaults (30 GB VRAM Ampere/Hopper):
-#   --no-4bit     run base in bf16 (cleaner gradients than 4-bit nf4)
-#   --num-generations 8
-#   --lora-r 32 --lora-alpha 64
+# DGX defaults (30 GB VRAM Ampere/Hopper) — saturate the GPU for GRPO:
+#   --max-steps 100                    100 steps total
+#   --save-steps 10                    checkpoint every 10 steps (10 saves total)
+#   --save-total-limit 10              keep all 10 on disk + Hub
+#   --num-generations 12               bigger group → stronger GRPO gradient
+#   --grad-accum-steps 4               48 generations evaluated per gradient update
+#   --max-completion-length 512        more tokens per response
+#   --no-4bit                          bf16 base (cleaner grads than 4-bit nf4)
+#   --gradient-checkpointing (default) lets the bigger group fit
+#   --optim adamw_torch_fused          ~3-5% throughput gain on sm_80+
 #
-# To enable Hub push, pass --push-to-hub --hub-model-id <user>/zombiee-v2 and
-# also set HUGGINGFACE_TOKEN at `docker run -e HUGGINGFACE_TOKEN=...`.
+# To enable Hub push, override CMD or pass extra args:
+#   docker run ... survivecity-v2-dgx <override-args>
+# and set HUGGINGFACE_TOKEN with `-e HUGGINGFACE_TOKEN=...`.
 CMD ["bash", "-c", "\
 echo '=== SurviveCity v2 DGX training ===' && \
 echo \"GPU info:\" && \
 nvidia-smi -L || true && \
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \
-    --max-steps 200 \
-    --save-steps 25 \
+    --max-steps 100 \
+    --save-steps 10 \
+    --save-total-limit 10 \
     --output-dir /app/checkpoints \
-    --num-generations 8 \
+    --num-generations 12 \
+    --grad-accum-steps 4 \
+    --max-completion-length 512 \
     --lora-r 32 \
     --lora-alpha 64 \
     --max-seq-length 4096 \

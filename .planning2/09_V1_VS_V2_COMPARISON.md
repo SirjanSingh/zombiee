@@ -121,18 +121,21 @@ periodic rewards table — a feature v1 didn't have).
 | LoRA target modules | q,k,v,o_proj | q,k,v,o_proj | Same |
 | LoRA dropout | 0.0 | 0.0 | Same |
 | Optimizer LR | 1e-5 | 1e-5 | Same (cosine to 0) |
+| Optimizer | adamw_torch | **adamw_torch_fused** | ~3-5% throughput on Ampere+ (sm_80+) |
 | KL β | 0.04 | 0.04 | Same |
 | Temperature | 0.9 | 0.9 | Same |
-| GRPO group size | 4 | **8** | More generations per step, better gradient |
+| GRPO group size (`num_generations`) | 4 | **12** | Tripled — bigger group → stronger GRPO gradient variance |
 | Per-device batch size | 1 | 1 | Same |
-| Gradient accumulation | 16 | 8 | Smaller because num_generations=8 already widens batch |
+| Gradient accumulation | 16 | **4** | Smaller because num_generations=12 already widens batch |
+| Generations per gradient update | 4×16=64 | **12×4=48** | Slightly fewer prompts but each group has more samples (better variance estimate) |
+| Gradient checkpointing | inherited via Unsloth | **explicit, on by default** | Lets num_generations=12 + max_completion=512 fit in 30 GB |
 | Max prompt length | 512 (T4) | **1536** | v2 prompt is ~1.5× longer with new mechanics |
-| Max completion length | 256 | 320 | Slightly longer for the new action JSON fields |
+| Max completion length | 256 | **512** | Doubled — gives the model room for verbose JSON across all 6 v2 fields |
 | Max seq length | 4096 | 4096 | Same |
-| Max steps | 12 (Colab cap) | **200** | DGX has wallclock budget |
-| Save steps | 1 | 25 | 8 saves over 200 steps; v1 saved every step due to Colab disconnects |
-| save_total_limit | 3 | 4 | Standard practice |
-| Wallclock target | ~3 h 53 min (12 steps) | TBD on DGX | Per-step is similar in compute |
+| Max steps | 12 (Colab cap) | **100** | DGX wallclock budget; gives 10 checkpoints |
+| Save steps | 1 | **10** | 10 evenly-spaced saves; v1 saved every step due to Colab disconnects |
+| save_total_limit | 3 | **10** | Keep all 10 v2 checkpoints (Hub repo stays ~800 MB) |
+| Wallclock target | ~3 h 53 min (12 steps) | TBD on DGX (est. ~24-32 h on A100) | More compute per step but bigger group |
 | Hub strategy | every_save | every_save | Cross-machine resume |
 
 ---

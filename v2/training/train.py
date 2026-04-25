@@ -1,24 +1,31 @@
 """GRPO training pipeline for SurviveCity v2 — DGX-tuned (30 GB VRAM).
 
-Defaults reflect "training on a 30GB DGX node with bf16 capability":
-    --model-name      Qwen/Qwen2.5-3B-Instruct  (transferable to v2 from v1)
-    --max-steps       200
-    --save-steps      25                        (8 saves over a full run)
-    --num-generations 8                         (was 4 for T4 v1)
-    --lora-r          32                        (was 16)
-    --lora-alpha      64                        (was 32)
-    --max-seq-length  4096
+Defaults reflect "saturate a 30GB Ampere/Hopper DGX with GRPO":
+    --model-name              Qwen/Qwen2.5-3B-Instruct
+    --max-steps               100        (10 saves @ save_steps=10)
+    --save-steps              10
+    --save-total-limit        10         (keep all 10 on disk + Hub)
+    --num-generations         12         (bigger group → stronger GRPO gradient)
+    --gradient-accum-steps    4          (4 prompts/step × 12 gens = 48 evals/step)
+    --max-completion-length   512        (longer responses, more tokens to learn from)
+    --lora-r                  32
+    --lora-alpha              64
+    --max-seq-length          4096
 
-Hub push is opt-in via --push-to-hub; if enabled, every checkpoint goes to
-hub_model_id with hub_strategy="every_save", so a 15GB eval box can pull a
-mid-training checkpoint and run training.eval against it without waiting for
-the full run to finish.
+Memory strategy: bf16 base model + gradient checkpointing enabled on the
+non-4bit path. Lets num_generations=12 fit alongside max_completion_length=512
+without OOM at peak. Optimizer is `adamw_torch_fused` for an extra 3-5%
+throughput on Ampere+.
+
+Hub push: opt-in via --push-to-hub. With `hub_strategy="every_save"`, every
+save-step pushes the entire output_dir to the Hub repo, so the 15GB eval box
+can pull mid-training and run training.eval against any checkpoint.
 
 Usage:
     python -m training.train [args]
 
-The script uses a LOCAL SurviveCityV2Env in the GRPO reward function (no HTTP
-server required during training — same pattern as v1's train.py).
+The script uses a LOCAL SurviveCityV2Env in the GRPO reward function — no
+HTTP server required during training (same pattern as v1).
 """
 
 from __future__ import annotations
@@ -39,23 +46,23 @@ logger = logging.getLogger("survivecity_v2.train")
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model-name", default="Qwen/Qwen2.5-3B-Instruct")
-    p.add_argument("--max-steps", type=int, default=200)
-    p.add_argument("--save-steps", type=int, default=25)
+    p.add_argument("--max-steps", type=int, default=100)
+    p.add_argument("--save-steps", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-5)
-    p.add_argument("--num-generations", type=int, default=8)
+    p.add_argument("--num-generations", type=int, default=12)
     p.add_argument("--output-dir", default="./checkpoints")
     p.add_argument("--lora-r", type=int, default=32)
     p.add_argument("--lora-alpha", type=int, default=64)
     p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--max-prompt-length", type=int, default=1536)
-    p.add_argument("--max-completion-length", type=int, default=320)
+    p.add_argument("--max-completion-length", type=int, default=512)
     p.add_argument("--temperature", type=float, default=0.9)
     p.add_argument("--beta", type=float, default=0.04)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-scenarios", type=int, default=200)
     p.add_argument("--report-to", default="tensorboard")
     p.add_argument("--per-device-batch-size", type=int, default=1)
-    p.add_argument("--grad-accum-steps", type=int, default=8)
+    p.add_argument("--grad-accum-steps", type=int, default=4)
     # Resume / hub flags
     p.add_argument(
         "--resume-from-checkpoint", default=None,
@@ -66,8 +73,19 @@ def parse_args():
         help="Push every checkpoint to --hub-model-id (requires HUGGINGFACE_TOKEN).")
     p.add_argument("--hub-model-id", default=None)
     p.add_argument("--hub-private", action="store_true")
-    p.add_argument("--save-total-limit", type=int, default=4,
-                   help="Keep at most this many checkpoints on disk locally.")
+    p.add_argument("--save-total-limit", type=int, default=10,
+                   help="Keep at most this many checkpoints on disk locally. "
+                        "Default 10 keeps every save from a 100-step / save_steps=10 run.")
+    p.add_argument("--gradient-checkpointing", action="store_true", default=True,
+                   help="Enable gradient checkpointing to fit larger num_generations × "
+                        "max_completion_length within VRAM. Trades ~30%% per-step time for ~40%% "
+                        "memory headroom — a worthwhile swap on a 30GB box at num_generations=12.")
+    p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
+                   action="store_false",
+                   help="Disable gradient checkpointing (only safe with smaller num_generations).")
+    p.add_argument("--optim", default="adamw_torch_fused",
+                   help="Optimizer name. adamw_torch_fused is faster on Ampere+ (sm_80+); "
+                        "fall back to adamw_torch on V100/T4.")
     p.add_argument(
         "--warmstart-from", default=None,
         help="Optional HF Hub repo id (or local path) to a v1 LoRA. "
@@ -256,7 +274,23 @@ def main():
         quantization_config=bnb_config,
     )
     if bnb_config is not None:
-        model = prepare_model_for_kbit_training(model)
+        # prepare_model_for_kbit_training enables gradient_checkpointing internally
+        # AND ensures input grads are routed correctly through the embedding layer
+        # (required for GRPO's backward pass).
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=args.gradient_checkpointing
+        )
+    elif args.gradient_checkpointing:
+        # Non-4bit path: enable gradient checkpointing manually. The use_reentrant=False
+        # variant is required for newer transformers (>=4.40) to avoid silent grad loss.
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+        # Ensure inputs require grad so checkpointed activations propagate backward
+        # through the LoRA layers. Without this, GRPO's loss has no path to LoRA params.
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        logger.info("Gradient checkpointing ENABLED (non-4bit path, use_reentrant=False)")
 
     # Either warmstart from a v1 (or v2) LoRA, or initialise a fresh LoRA
     if args.warmstart_from:
@@ -299,6 +333,16 @@ def main():
     if args.push_to_hub and not args.hub_model_id:
         logger.warning("--push-to-hub set without --hub-model-id; disabling hub push.")
 
+    # Optimizer pick: adamw_torch_fused on Ampere+ (~3-5% throughput gain).
+    # Fall back to plain adamw_torch on pre-Ampere (V100/T4) — fused needs sm_80+.
+    chosen_optim = args.optim
+    if chosen_optim == "adamw_torch_fused" and (not cuda_ok or cap[0] < 8):
+        logger.info(
+            f"adamw_torch_fused needs sm_80+ (got cc={cap[0]}.{cap[1]}); "
+            "falling back to adamw_torch."
+        )
+        chosen_optim = "adamw_torch"
+
     config = GRPOConfig(
         output_dir=args.output_dir,
         num_generations=args.num_generations,
@@ -307,7 +351,7 @@ def main():
         learning_rate=args.lr,
         max_steps=args.max_steps,
         save_steps=args.save_steps,
-        logging_steps=10,
+        logging_steps=5,
         save_total_limit=args.save_total_limit,
         max_prompt_length=args.max_prompt_length,
         max_completion_length=args.max_completion_length,
@@ -318,6 +362,8 @@ def main():
         bf16_full_eval=use_bf16,
         fp16_full_eval=use_fp16,
         tf32=use_bf16,
+        gradient_checkpointing=args.gradient_checkpointing,
+        optim=chosen_optim,
         report_to=args.report_to if args.report_to != "none" else None,
         push_to_hub=push_to_hub,
         hub_model_id=args.hub_model_id if push_to_hub else None,
@@ -325,10 +371,18 @@ def main():
         hub_strategy="every_save" if push_to_hub else "end",
         seed=args.seed,
     )
+    # Per-step generation budget = num_gen * (per_device_batch * grad_accum).
+    # With defaults (num_gen=12, batch=1, grad_accum=4): 48 generations evaluated per
+    # GRPO update. Compare v1 (num_gen=4, batch=1, grad_accum=16): 64 evals/step.
+    gen_per_step = (
+        args.num_generations * args.per_device_batch_size * args.grad_accum_steps
+    )
     logger.info(
         f"GRPOConfig: bf16={config.bf16} fp16={config.fp16} "
         f"num_gen={config.num_generations} max_steps={config.max_steps} "
-        f"save_steps={config.save_steps} grad_accum={config.gradient_accumulation_steps}"
+        f"save_steps={config.save_steps} grad_accum={config.gradient_accumulation_steps} "
+        f"max_compl_len={config.max_completion_length} optim={chosen_optim} "
+        f"grad_ckpt={args.gradient_checkpointing} gen_evals_per_step={gen_per_step}"
     )
 
     _seed_warnings_issued(model)
