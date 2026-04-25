@@ -497,11 +497,17 @@ def main():
         quantization_config=bnb_config,
     )
     if bnb_config is not None:
-        # prepare_model_for_kbit_training enables gradient_checkpointing internally
-        # AND ensures input grads are routed correctly through the embedding layer
-        # (required for GRPO's backward pass).
+        # IMPORTANT: pass use_gradient_checkpointing=False here. peft 0.13.2's
+        # prepare_model_for_kbit_training enables GC with use_reentrant=True
+        # (its default), and reentrant checkpointing requires the checkpointed
+        # segment to have at least one input with requires_grad=True. The
+        # embedding hook is supposed to provide that, but on a 4-bit-frozen
+        # base wrapped by PEFT, it breaks — every LoRA param ends up with
+        # grad=None ("None of the inputs have requires_grad=True. Gradients
+        # will be None"). We enable GC manually AFTER the PEFT wrap below
+        # using use_reentrant=False, which has no such requirement.
         model = prepare_model_for_kbit_training(
-            model, use_gradient_checkpointing=args.gradient_checkpointing
+            model, use_gradient_checkpointing=False
         )
     elif args.gradient_checkpointing:
         # Non-4bit path: enable gradient checkpointing manually. The use_reentrant=False
@@ -538,65 +544,100 @@ def main():
         model = get_peft_model(model, peft_cfg)
 
     # ------------------------------------------------------------------
-    # Re-arm the input-grad hook AFTER PEFT wrapping.
+    # Enable gradient checkpointing AFTER the PEFT wrap, with use_reentrant=False.
     #
-    # `prepare_model_for_kbit_training` registers a forward hook on
-    # `model.get_input_embeddings()` that flips `requires_grad=True` on the
-    # embedding output. That hook is registered on the BASE model — but
-    # `get_peft_model(...)` (and `PeftModel.from_pretrained` for warmstart)
-    # then wraps the base model in `PeftModel`, which exposes a NEW
-    # `get_input_embeddings()` chain. In some torch/peft version combos
-    # (incl. ours: torch 2.5.1 + peft 0.13.2 + transformers 4.46.3) the
-    # original hook stops firing — and torch.utils.checkpoint then warns:
-    #   "None of the inputs have requires_grad=True. Gradients will be None"
-    # This is the silent-trainer bug: the loop runs, checkpoints save, but
-    # the LoRA never updates because no grad flows through the checkpointed
-    # transformer blocks.
+    # The earlier sanity-check run on DGX caught the actual failure mode:
+    #   "GRAD SANITY FAILED: 0 LoRA params got a gradient; 288 LoRA params
+    #    had grad=None. Training would silently no-op."
+    # i.e. just calling enable_input_require_grads() AFTER the PEFT wrap is
+    # NOT enough — peft 0.13.2's prepare_model_for_kbit_training had already
+    # turned on REENTRANT gradient checkpointing, which is the variant that
+    # demands input-requires-grad — and that demand can't be satisfied
+    # cleanly through the PEFT delegation chain on a 4-bit-frozen base.
     #
-    # Fix: explicitly re-enable input grads on the PEFT-wrapped model and
-    # do a tiny live forward+backward sanity check that an actual gradient
-    # lands on a LoRA param. If it doesn't, fail LOUD instead of training
-    # for 12h on a no-op.
+    # The robust fix is to do GC ourselves, AFTER the wrap, with
+    # use_reentrant=False. Non-reentrant checkpointing recomputes activations
+    # by re-running the forward in a torch.enable_grad() context; it does NOT
+    # require any of the original inputs to require_grad, so the
+    # frozen-base + LoRA-adapters + GC combo "just works".
+    #
+    # We still call enable_input_require_grads as a belt-and-suspenders, so
+    # the non-reentrant path also has the embedding hook in place if any
+    # downstream code (e.g. transformers' generate) checks for it.
     # ------------------------------------------------------------------
-    if args.gradient_checkpointing and hasattr(model, "enable_input_require_grads"):
-        model.enable_input_require_grads()
-        logger.info("Re-armed enable_input_require_grads() on PEFT-wrapped model.")
+    if args.gradient_checkpointing:
+        try:
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            logger.info(
+                "Gradient checkpointing ENABLED on PEFT-wrapped model "
+                "(use_reentrant=False)."
+            )
+        except Exception as _gc_err:
+            logger.warning(
+                f"gradient_checkpointing_enable failed on PEFT model "
+                f"({type(_gc_err).__name__}: {_gc_err}). Falling back to "
+                f"base_model.gradient_checkpointing_enable."
+            )
+            base = getattr(model, "base_model", None)
+            inner = getattr(base, "model", base) if base is not None else model
+            inner.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+            logger.info("enable_input_require_grads() armed on PEFT model.")
 
-    # Sanity-check: do a 1-token forward+backward and confirm at least one
-    # LoRA param received a non-None gradient. If not, the gradient-flow
-    # warning was real and training would silently no-op.
+    # Sanity-check: do a small forward+backward and confirm at least one LoRA
+    # param received a non-None gradient. If not, the gradient-flow warning
+    # was real and training would silently no-op.
+    #
+    # Use 8 tokens, NOT 1 — with a single token, after HF's label-shift
+    # (logits[:, :-1] vs labels[:, 1:]) you have 0 prediction targets and
+    # the loss is degenerate (NaN or 0), which produces no useful gradient
+    # and gives a false "fail" on the sanity check.
     try:
         model.train()
         _device = next(model.parameters()).device
-        _input_ids = torch.tensor([[tokenizer.bos_token_id or tokenizer.eos_token_id or 0]],
-                                  device=_device)
+        # Build a short, valid token sequence. Prefer the tokenizer's bos/eos,
+        # but pad out with low-vocab token IDs that always exist.
+        _seed_tok = tokenizer.bos_token_id or tokenizer.eos_token_id or 0
+        _ids = [_seed_tok] + [(_seed_tok + i + 1) % max(1000, _seed_tok + 16) for i in range(7)]
+        _input_ids = torch.tensor([_ids], device=_device, dtype=torch.long)
         _labels = _input_ids.clone()
         _out = model(input_ids=_input_ids, labels=_labels)
         if getattr(_out, "loss", None) is None:
             raise RuntimeError("sanity forward returned no loss")
-        _out.loss.backward()
+        _loss = _out.loss
+        if not torch.isfinite(_loss):
+            raise RuntimeError(f"sanity forward returned non-finite loss: {_loss.item()}")
+        _loss.backward()
         lora_with_grad = []
         lora_without_grad = []
         for name, p in model.named_parameters():
             if "lora_" in name and p.requires_grad:
-                (lora_with_grad if p.grad is not None and p.grad.abs().sum() > 0
-                 else lora_without_grad).append(name)
+                if p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0:
+                    lora_with_grad.append(name)
+                else:
+                    lora_without_grad.append(name)
         # Clean up the sanity grad so it doesn't pollute the first real step
         model.zero_grad(set_to_none=True)
         if not lora_with_grad:
             logger.error(
                 f"GRAD SANITY FAILED: 0 LoRA params got a gradient; "
                 f"{len(lora_without_grad)} LoRA params had grad=None. "
+                f"sanity_loss={_loss.item():.4f}. "
                 f"Training would silently no-op. Check enable_input_require_grads "
-                f"+ gradient_checkpointing interaction."
+                f"+ gradient_checkpointing (use_reentrant) interaction."
             )
             raise RuntimeError(
                 "Gradient flow sanity check failed — refusing to train a no-op "
                 "for hours. See log above."
             )
         logger.info(
-            f"GRAD SANITY OK: {len(lora_with_grad)} LoRA params received gradient "
-            f"(of {len(lora_with_grad) + len(lora_without_grad)} trainable). "
+            f"GRAD SANITY OK: {len(lora_with_grad)}/{len(lora_with_grad) + len(lora_without_grad)} "
+            f"LoRA params received gradient. sanity_loss={_loss.item():.4f}. "
             f"sample={lora_with_grad[0]}"
         )
     except RuntimeError:
