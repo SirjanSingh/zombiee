@@ -5,7 +5,9 @@
       "Bash(git -C D:/projs/zombiee config user.name)",
       "Bash(git -C D:/projs/zombiee config user.email)",
       "Bash(git -C D:/projs/zombiee status --short)",
-      "Bash(git -C D:/projs/zombiee diff Dockerfile)"
+      "Bash(git -C D:/projs/zombiee diff Dockerfile)",
+      "Bash(git fetch *)",
+      "Bash(python C:/Users/Sirjan/.claude/skills/ui-ux-pro-max/scripts/search.py \"AI ML hackathon multi-agent simulation dashboard zombie apocalypse cyberpunk dark gaming\" --design-system -p \"SurviveCity\")"
     ]
   }
 }
