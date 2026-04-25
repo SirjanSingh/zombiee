@@ -62,31 +62,23 @@
 \maketitle
 
 % ============================================================================
-%  ABSTRACT
+%  TL;DR
 % ============================================================================
-\begin{abstract}
-\noindent
-We present \textbf{SurviveCity}, an OpenEnv-compliant multi-agent zombie-apocalypse
-environment for training LLM agents to coordinate under partial information. Three agents
-share a $10\!\times\!10$ city grid with three scripted zombies; one agent is secretly
-\emph{infected} and must be detected by behavioural cues and voted out before infection
-spreads. After every episode, deterministic post-mortems describing each death are
-prepended to the next episode's system prompt --- to our knowledge the first OpenEnv
-implementation of \emph{cross-episode failure-replay learning} for multi-agent LLM
-theory-of-mind. We train a Qwen2.5-3B LoRA via GRPO over 12 group-policy steps
-($\approx$3\,h\,53\,min on a single Colab T4) and evaluate against a random baseline
-on survival rate, vote accuracy, and per-step reward. Across 472 evaluation
-actions the trained policy produced \textbf{100\% valid JSON} (zero parse failures)
-and emitted plausible theory-of-mind broadcasts of the form
-\textit{``I notice A2 is very hungry and may be infected soon''}, evidence that
-both the action grammar and the social-deduction structure of the task were
-internalised. Headline eval ($n{=}5$ trained vs. $n{=}20$ random baseline):
-survival rate \textbf{0\% $\rightarrow$ 20\%}, mean total episode reward
-\textbf{0.42 $\rightarrow$ 1.24} ($3.0\!\times$), and mean episode length
-\textbf{17.3 $\rightarrow$ 43.4 steps} ($2.5\!\times$). One trained episode
-fully completed the 100-step horizon with reward 2.97 ($\approx$99\% of the
-theoretical ceiling).
-\end{abstract}
+\section*{TL;DR}
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{What.} \emph{SurviveCity} --- an OpenEnv-compliant 3-agent zombie/social-deduction
+        env with deterministic \emph{cross-episode post-mortems} prepended to the next episode's
+        system prompt.
+  \item \textbf{Train.} Qwen2.5-3B + LoRA r=16, GRPO ($g{=}4$, KL $0.04$),
+        \textbf{12 steps in 3\,h\,53\,min} on a single Colab T4.
+  \item \textbf{Headline (step-12 eval, $n_b{=}30$ random vs. $n_t{=}10$ trained):}
+        \textbf{survival 0\% $\rightarrow$ 10\%}, \textbf{mean reward 0.46 $\rightarrow$ 0.80}
+        ($1.7\!\times$), \textbf{mean ep length 19.1 $\rightarrow$ 37.6 steps} ($2.0\!\times$).
+  \item \textbf{Format.} \textbf{100\% valid JSON} (0 parse fails over the trained eval).
+  \item \textbf{Behaviour.} Emergent ToM broadcast (\textit{``I notice A2 is very hungry
+        and may be infected soon''}); one episode reached 100-step survival with
+        reward $1.97$.
+\end{itemize}
 
 % ============================================================================
 %  1. INTRODUCTION
@@ -94,28 +86,26 @@ theoretical ceiling).
 \section{Introduction}
 \label{sec:intro}
 
-Modern LLM-agent benchmarks tend to test single-agent goal completion in static
-environments \cite{TODO_REF_AGENTBENCH}.
-Two phenomena central to multi-agent reasoning are not directly probed:
-\textbf{cross-episode learning from failure}, and \textbf{hidden-role theory of mind}.
-We design an environment that forces the policy to confront both:
+Most LLM-agent benchmarks test single-agent goal completion in static environments
+\cite{TODO_REF_AGENTBENCH}. Two phenomena central to multi-agent reasoning are not directly
+probed: \textbf{cross-episode learning from failure} and \textbf{hidden-role theory of mind}.
+SurviveCity targets both.
 
-\begin{enumerate}[leftmargin=*]
-    \item Each death produces a structured, deterministic post-mortem string.
-          The next episode prepends the agent's last $N$ post-mortems to its system
-          prompt, creating a within-training cross-episode learning loop --- without
-          requiring an external memory module.
-    \item Exactly one of three agents is silently infected at $t{=}0$. Behavioural
-          cues (faster hunger, post-step-30 attacks) leak into observation
-          descriptions for the other agents, who must vote at $t{=}50$ to lock the
-          infected agent out of the safehouse.
-\end{enumerate}
+\begin{itemize}[leftmargin=*,nosep]
+    \item \textbf{Post-mortem replay.} Each death emits a deterministic post-mortem string;
+          the next episode prepends the agent's last $N{=}3$ post-mortems to its system prompt.
+          A within-training cross-episode learning loop \emph{without} an external memory module
+          or LLM-as-judge.
+    \item \textbf{Hidden-role social deduction.} Exactly one of three agents is silently
+          infected at $t{=}0$. Behavioural cues (faster hunger, post-step-30 attacks)
+          leak into observations; agents vote at $t{=}50$ to lock the infected agent
+          out of the safehouse.
+\end{itemize}
 
-The hackathon judging rubric weights \emph{innovation} (40\%), \emph{storytelling}
-(30\%), \emph{reward improvement} (20\%), and \emph{pipeline quality} (10\%). The
-post-mortem mechanism is our primary innovation contribution; the env design and
-reward composition target pipeline quality; the GRPO training run targets the
-reward-improvement criterion.
+\noindent\textbf{Mapping to rubric.} \emph{Innovation (40\%)}: post-mortem replay.
+\emph{Pipeline (10\%)}: env design + reward composition. \emph{Reward improvement
+(20\%)}: GRPO training run + step-12 eval. \emph{Storytelling (30\%)}: this writeup
++ demo video.
 
 % ============================================================================
 %  2. ENVIRONMENT
@@ -135,11 +125,21 @@ hunger $\geq 15$ deals 1\,HP per step. Eating on a food cell resets hunger.
 
 \begin{figure}[h]
   \centering
-  % TODO: replace with figures/grid_layout.png — see report/v1/README.md for
-  % how to generate this from layout.py output.
-  \fbox{\parbox[b][3.5cm][c]{0.45\textwidth}{\centering\itshape (placeholder for grid figure --- see figures/grid\_layout.png)}}
-  \caption{Fixed $10\!\times\!10$ layout. \texttt{F} = food, \texttt{S} = safehouse,
-           \texttt{\#} = wall, \texttt{Z} = zombie spawn corner.}
+\begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single,framesep=4pt,backgroundcolor=\color{gray!8}]
+  Z . . . . . . . . Z
+  . . # . . . . # . .
+  . . . . . . . . . .
+  . . . S S S . . . .
+  F . . S S S . . . F
+  F . . S S S . . . F
+  . . . . . . . . . .
+  . . # . . . . # . .
+  . . . . . . . . . .
+  Z . . . . . . . . Z
+\end{lstlisting}
+  \caption{Fixed $10\!\times\!10$ layout. \texttt{F} = food, \texttt{S} = $3\!\times\!3$
+           safehouse, \texttt{\#} = wall, \texttt{Z} = zombie spawn corner. Agents
+           start inside \texttt{S} with $\mathtt{hp}{=}3$, $\mathtt{hunger}{=}0$.}
   \label{fig:grid}
 \end{figure}
 
@@ -232,8 +232,8 @@ r_t \;=\; \mathrm{clip}\!\Bigl(r_{\text{surv}} + r_{\text{vote}} + r_{\text{grou
 \qquad r_{\text{raw}}\,\in\,\mathtt{obs.metadata["raw\_reward"]}.
 \]
 
-We deliberately preserve the raw, signed reward in metadata for debugging while
-exposing only the clipped value to the OpenEnv contract.
+The raw, signed reward is preserved in metadata for debugging; only the clipped
+value is exposed to the OpenEnv contract.
 
 % ============================================================================
 %  4. METHOD
@@ -242,19 +242,19 @@ exposing only the clipped value to the OpenEnv contract.
 \label{sec:method}
 
 \subsection{Architecture}
-We fine-tune \textbf{Qwen2.5-3B-Instruct} \cite{TODO_REF_QWEN} via low-rank adaptation
-(LoRA \cite{TODO_REF_LORA}) on attention projection matrices ($q,k,v,o$) with $r{=}16$,
-$\alpha{=}32$, dropout $0$, no bias. Training uses Group Relative Policy Optimization
-(GRPO) \cite{TODO_REF_DEEPSEEKR1} from HuggingFace TRL, group size $4$, KL coefficient
-$0.04$, temperature $0.9$, learning rate $1\!\times\!10^{-5}$ with cosine decay.
+\textbf{Qwen2.5-3B-Instruct} \cite{TODO_REF_QWEN} fine-tuned with LoRA
+\cite{TODO_REF_LORA} on attention projections ($q,k,v,o$); $r{=}16$, $\alpha{=}32$,
+dropout $0$, no bias. Training: GRPO \cite{TODO_REF_DEEPSEEKR1} from HuggingFace
+TRL, $g{=}4$, KL $0.04$, temperature $0.9$, lr $1\!\times\!10^{-5}$ with cosine
+decay to zero.
 
 \subsection{Reward Hook}
-Each GRPO completion is scored by simulating one episode: the model's first action
-is executed in a fresh \texttt{SurviveCityEnv} seeded from the prompt, and the
-remaining $\sim$$99$ steps are rolled out with random actions. The terminal reward
-is returned. This is a \emph{deliberate simplification} for compute reasons --- we
-flag it as the primary bottleneck on policy improvement in
-Section~\ref{sec:limitations}.
+Each GRPO completion is scored by running one episode in a fresh
+\texttt{SurviveCityEnv} seeded from the prompt: the model's first action is
+executed, the remaining $\sim$99 steps are rolled out with uniform-random
+actions, and the terminal reward is returned. This is a deliberate
+compute-saving simplification that we flag as the primary bottleneck on policy
+improvement in Section~\ref{sec:limitations}.
 
 \subsection{Hyperparameters}
 \begin{table}[h]
@@ -318,18 +318,17 @@ consistent with the small group reward variance ($\sim 0.014$) implying weak GRP
 
 \subsection{Evaluation Setup}
 
-We evaluated the trained policy on \textbf{5 held-out episodes} against
-\textbf{20 baseline episodes} (uniform random actions over the six movement
-\& \texttt{eat}/\texttt{wait} actions, with \texttt{vote\_lockout} sampled uniformly
-at $t{=}50$ if any agent is still alive). The trained policy uses the LoRA snapshot
-present at the Hub repo root at evaluation time (timestamp 2026-04-25T05:38Z),
-corresponding to approximately step~10 of 12; given the small KL drift between
-step~10 and step~12 ($<5\!\times\!10^{-3}$, see Fig.~\ref{fig:train_curve}) we
-treat this as representative of final-policy behaviour. The LoRA is loaded over
-the fp16 \texttt{Qwen/Qwen2.5-3B-Instruct} base. Generation: \texttt{max\_new\_tokens=64},
-temperature $0.7$, \texttt{do\_sample=True}. Action JSON is parsed with a strict
-whitelist; invalid outputs fall back to a single random action (counted in the
-parse-failure metric).
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Trained policy:} LoRA from \texttt{checkpoint-12} (final step), loaded over
+        fp16 \texttt{Qwen/Qwen2.5-3B-Instruct}. Eval timestamp: 2026-04-25T08:14Z.
+  \item \textbf{Baseline:} uniform random over the six movement \& \texttt{eat}/\texttt{wait}
+        actions; \texttt{vote\_lockout} sampled uniformly at $t{=}50$ if any agent is alive.
+  \item \textbf{Episodes:} $n_b{=}30$ baseline, $n_t{=}10$ trained. Same fixed grid, distinct
+        seeds.
+  \item \textbf{Generation:} \texttt{max\_new\_tokens=64}, temperature $0.7$, \texttt{do\_sample=True}.
+  \item \textbf{Parsing:} strict-whitelist JSON; invalid outputs fall back to one random
+        action and are counted in the parse-failure metric.
+\end{itemize}
 
 \subsection{Metrics}
 
@@ -339,76 +338,77 @@ Table~\ref{tab:metrics} and Figure~\ref{fig:bars} summarise the eval results.
   \centering
   \begin{tabular}{lrrr}
     \toprule
-    Metric                                     & Baseline ($n{=}20$) & Trained ($n{=}5$) & $\Delta$ \\
+    Metric                                     & Baseline ($n_b{=}30$) & Trained ($n_t{=}10$) & $\Delta$ \\
     \midrule
-    Survival rate                              & 0.0\,\% (0/20)       & 20.0\,\% (1/5)     & $+20$\,pp \\
-    Vote accuracy (correct lockout)            & undefined$^{\dagger}$ & 0.0\,\% (0/1)     & --- \\
-    Mean total episode reward                  & $0.42 \pm 0.10$      & $1.24 \pm 0.90$    & $+0.82$ \\
-    Mean episode length (steps)                & $17.3 \pm 5.7$       & $43.4 \pm 29.1$    & $+26.1$ \\
-    JSON parse-success rate                    & 100\,\% (random; no JSON) & 100\,\% (0/472 fails) & --- \\
+    Survival rate                              & $0.0\,\%$ (0/30)         & $10.0\,\%$ (1/10)        & $+10$\,pp \\
+    Vote accuracy (correct lockout)            & undefined$^{\dagger}$    & 0.0\,\% (0/1)            & --- \\
+    Mean total episode reward                  & $0.457$                  & $0.797 \pm 0.41$         & $+0.34$ ($1.7\!\times$) \\
+    Mean episode length (steps)                & $19.1 \pm 7.3$           & $37.6 \pm 22.1$          & $+18.5$ ($2.0\!\times$) \\
+    JSON parse-success rate                    & 100\,\% (random; no JSON) & \textbf{100\,\%} (0 fails) & --- \\
     \bottomrule
   \end{tabular}
-  \caption{Evaluation metrics. $^{\dagger}$Across 20 random-baseline episodes
-           none reached step~50, so the vote phase never fired; vote accuracy is
-           undefined for the baseline. Trained-policy results are dominated by a
-           single full-episode survival (ep~0: 100 steps, total reward 2.97).
-           The 100\% JSON parse rate over 472 trained-eval actions demonstrates
-           that fine-tuning fully internalised the env's action grammar.}
+  \caption{Step-12 evaluation. $^{\dagger}$None of the 30 baseline episodes reached
+           step~50, so the vote phase never fired; vote accuracy is undefined for
+           the baseline. The trained-policy reward is dominated by one
+           full-episode survival (ep~2: 100 steps, total reward $1.965$); the
+           remaining nine episodes terminated mid-game. Zero JSON parse failures
+           across the trained eval --- the policy fully internalised the action
+           grammar.}
   \label{tab:metrics}
 \end{table}
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=0.92\textwidth]{figures/eval_bars.png}
-  \caption{Baseline (orange, $n{=}20$) vs.\ trained (blue, $n{=}5$) on three primary metrics:
-           survival rate, vote accuracy, and mean total episode reward (with $\pm 1\sigma$
-           error bar on the reward panel). Generated by
-           \texttt{notebooks/eval\_colab.ipynb} cell~10 and pulled from
-           \texttt{noanya/zombiee/eval\_results/eval\_step\_0000\_bars.png}.
-           Note: vote accuracy is 0 for both because none of the baseline episodes
-           reached the vote phase, and the single trained vote in our $n{=}5$ sample
-           was incorrect --- this metric needs larger $N$ to be informative.}
+  \includegraphics[width=0.92\textwidth]{figures/eval_step_0012_bars.png}
+  \caption{Step-12 eval. Baseline ($n_b{=}30$) vs.\ trained ($n_t{=}10$) on the three
+           primary metrics: survival rate, vote accuracy, and mean total episode
+           reward (with $\pm 1\sigma$ on the reward panel). Source:
+           \texttt{noanya/zombiee/eval\_results/eval\_step\_0012\_bars.png},
+           generated by \texttt{notebooks/eval\_colab.ipynb} cell~10.}
   \label{fig:bars}
 \end{figure}
 
-% Cross-checkpoint trend chart deferred: only one evaluation snapshot was
-% completed before submission, so a "trend" plot would be misleading. Future
-% runs will populate noanya/zombiee/eval_results/ with multiple eval_step_*.json
-% files and the eval notebook (cell 12) will auto-render the trend chart.
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\textwidth]{figures/eval_history.png}
+  \caption{Cross-checkpoint trend across the two completed evaluations: the
+           partial-snapshot eval at $\approx$step~10 (Hub root, 2026-04-25T05:38\,UTC,
+           $n_t{=}5,\ n_b{=}20$) and the proper step-12 eval
+           (2026-04-25T08:14\,UTC, $n_t{=}10,\ n_b{=}30$). Step-12 is the
+           headline; step-10 was a within-window sanity check, not a separate
+           run. Both evaluations show positive deltas vs.\ baseline; step-12
+           lands at a more conservative point estimate (survival 10\% vs.\ 20\%,
+           reward $0.80$ vs.\ $1.24$) but with a larger sample.}
+  \label{fig:history}
+\end{figure}
 
 \subsection{Behavioural Analysis}
 
 \paragraph{Full-episode survival.}
-In one of the five trained-policy episodes (random seed 988712, infected
-agent A0), the policy successfully completed the entire 100-step horizon with
-at least one healthy agent alive at termination, accumulating a total reward of
-\textbf{2.965} --- within $\approx$1\% of the theoretical episode-reward
-ceiling under our rubric ($\sim$3.0). The remaining four episodes ended at steps
-$\{16, 33, 33, 35\}$ with rewards $\{0.40, 1.20, 0.80, 0.81\}$ respectively.
-The bimodal outcome distribution (one full survival, four mid-episode deaths)
-suggests the policy has acquired a partial strategy that closes the loop when
-initial conditions are favourable but is brittle to early adverse zombie
-spawns or hunger trajectories. With $n{=}5$ this is anecdotal, but the
-existence of even one near-ceiling episode is evidence the policy can
-\emph{in principle} solve the task.
+In one of the ten trained-policy episodes (eval ep~2), the policy completed the
+entire 100-step horizon with at least one healthy agent alive at termination,
+accumulating a total reward of \textbf{1.965}. The remaining nine episodes
+terminated mid-game with shorter survival but consistently above-baseline
+rewards (mean $0.667$ on the non-survivor subset vs.\ $0.457$ for the
+$n_b{=}30$ random baseline). The bimodal outcome distribution --- one full
+survival, nine mid-episode deaths --- suggests the policy has acquired a
+\emph{partial} strategy that closes the loop when initial conditions are
+favourable but is brittle to early adverse zombie spawns or hunger
+trajectories. With $n_t{=}10$ this is still small-$N$, but the existence of
+a 100-step episode is evidence the policy can in principle solve the task.
 
 \paragraph{Emergent theory-of-mind broadcast.}
-A representative trained-agent broadcast from evaluation:
+Representative trained-agent broadcast:
 \begin{quote}\itshape
   ``I notice A2 is very hungry and may be infected soon.''
 \end{quote}
-This message was emitted by the policy at $t{<}30$ in an episode where A2 was
-indeed the infected agent. The reasoning chain is concrete: the agent identified
-a specific peer (A2), referenced the right behavioural cue (hunger rate), made the
-correct inference (infected), and broadcast it under the env's strict 40-character
-cap. The message was originally 51 characters and was truncated to fit; the
-truncation in the eval pipeline preserved all the diagnostic content
-(\textit{``I notice A2 is very hungry and may be infect''}).
-
-We treat this as anecdotal qualitative evidence rather than a primary metric, but
-it exemplifies the env's central premise --- that text-channel theory-of-mind
-behaviour can emerge from a small-scale RL training loop given the right
-information structure.
+Emitted at $t{<}30$ in an episode where A2 was the infected agent. Concrete
+reasoning chain: identified a specific peer (A2), referenced the correct
+behavioural cue (hunger rate), made the right inference (infected), and
+broadcast under the 40-char cap (truncated from 51 chars in the eval pipeline,
+preserving diagnostic content). Anecdotal, but it exemplifies the env's
+central premise: text-channel theory-of-mind can emerge from a small RL loop
+given the right information structure.
 
 % ============================================================================
 %  6. DISCUSSION
@@ -419,55 +419,45 @@ information structure.
 \subsection{What Worked}
 \begin{itemize}[leftmargin=*]
   \item \textbf{OpenEnv compliance was first-pass.} All four R1 validator traps
-        from prior submissions (reward bounds, health endpoint string,
-        per-step reward, determinism) were preempted via the patterns
-        codified in our \texttt{.planning2/01\_OPENENV\_PATTERNS.md}.
-  \item \textbf{Format learning is complete.} 100\% JSON parse rate over 472
-        trained-eval actions. The model never produced unparseable output.
-        This is a hard, measurable training outcome.
-  \item \textbf{Reward-direction signal is unambiguous despite low $N$.}
-        Mean total reward ($1.24$ vs. $0.42$, $3.0\!\times$) and mean episode
-        length ($43.4$ vs. $17.3$ steps, $2.5\!\times$) both improved well
-        beyond the small-sample noise floor. The trained policy keeps agents
-        alive, on average, more than twice as long as random play does ---
-        evidence the policy is discovering survival strategy, not just
-        learning the action grammar.
-  \item \textbf{Cross-machine training resilience.} The
-        \texttt{hub\_strategy="every\_save"} + step-1 save cadence
-        meant that Colab/Kaggle disconnects cost $<$\,20 minutes of compute,
-        and any of three runners (Colab, Kaggle, DGX) could resume from
-        the same Hub repo (\texttt{noanya/zombiee}).
+        (reward bounds, health endpoint string, per-step reward, determinism)
+        were preempted via the patterns codified in
+        \texttt{.planning2/01\_OPENENV\_PATTERNS.md}.
+  \item \textbf{Format learning is complete.} 100\% JSON parse rate across the
+        trained eval. Zero unparseable outputs.
+  \item \textbf{Reward direction is unambiguous.} Mean total reward
+        ($0.80$ vs.\ $0.46$, $1.7\!\times$) and mean episode length
+        ($37.6$ vs.\ $19.1$ steps, $2.0\!\times$) both improved well beyond the
+        small-sample noise floor. The trained policy keeps agents alive, on
+        average, roughly twice as long as random --- evidence the policy is
+        discovering survival strategy, not just action grammar.
+  \item \textbf{Cross-machine training resilience.}
+        \texttt{hub\_strategy="every\_save"} with step-1 save cadence made
+        Colab/Kaggle disconnects cost $<$\,20\,min of compute; any of three
+        runners (Colab, Kaggle, DGX) could resume from the same Hub repo
+        (\texttt{noanya/zombiee}).
 \end{itemize}
 
 \subsection{Limitations}
 \label{sec:limitations}
 \begin{itemize}[leftmargin=*]
-  \item \textbf{Reward-signal weakness.} The reward function evaluates only the
-        \emph{first} model action of an episode; the remaining $\sim$99 steps
-        are uniform random. Final reward variance within a GRPO group
-        ($\sigma{=}0.014$) was therefore dominated by rollout RNG, not action
-        quality, weakening the policy gradient. Confirmed by the small KL drift
-        and small grad norms observed throughout training.
+  \item \textbf{Reward-signal weakness.} The reward hook scores only the
+        \emph{first} model action; the remaining $\sim$99 steps are uniform
+        random. GRPO group reward variance ($\sigma{=}0.014$) is therefore
+        dominated by rollout RNG, weakening the policy gradient --- consistent
+        with the small KL drift and tiny grad norms observed in training.
   \item \textbf{Behavioural-cue leakage.} \texttt{infection.py} emits explicit
-        text cues (\textit{``A1 is unusually hungry''}) into observation
-        descriptions. A trained agent can string-match this rather than
-        reason about hunger trajectories. We disclose this honestly; v2
-        replaces literal cues with noisy, false-positive-prone hints.
-  \item \textbf{Sample size.} $N{=}5$ trained eval episodes gives wide confidence
-        intervals on the survival rate (binomial CI $\approx[0.5\%, 71.6\%]$
-        at 95\% for $1/5$). The reward and episode-length deltas are larger
-        than within-class standard deviations, so those comparisons are
-        more robust than the survival headline. Larger $N$ (say $N{=}50$) is
-        desirable for paper-quality numbers but was infeasible in the
-        24-hour hackathon budget at $\sim$3\,min per LLM-driven episode.
-  \item \textbf{Eval snapshot $\neq$ final checkpoint.} The eval used the
-        Hub-root adapter at 05:38 UTC, $\approx$step~10 of 12. A like-for-like
-        step-12 eval was not completed within the submission window. The KL
-        trace (Fig.~\ref{fig:train_curve}) suggests negligible policy drift
-        between steps 10 and 12 ($\Delta\mathrm{KL}<10^{-3}$), but the
-        comparison would be cleaner with a true step-12 evaluation.
-  \item \textbf{Single map.} All evaluation episodes use the same fixed grid.
-        Generalisation to varied layouts is untested.
+        text cues (\textit{``A1 is unusually hungry''}) into observations. A
+        trained agent can string-match these rather than reason about hunger
+        trajectories. v2 replaces literal cues with noisy, false-positive-prone
+        hints.
+  \item \textbf{Sample size.} $n_t{=}10$ gives a 95\% binomial CI for the
+        survival rate of $\approx[0.25\%,\ 44.5\%]$ around $1/10$. The reward
+        and episode-length deltas are large relative to within-class
+        $\sigma$, so those comparisons are more robust than the survival
+        headline. Larger $N$ (e.g.\ $50$) was infeasible in the 24-hour
+        hackathon budget at $\sim$3\,min per LLM-driven episode.
+  \item \textbf{Single map.} All evaluation episodes use the same fixed grid;
+        generalisation to varied layouts is untested.
 \end{itemize}
 
 % ============================================================================
@@ -494,15 +484,14 @@ learning in a multi-agent LLM setting, with strict OpenEnv compliance. The
 post-mortem mechanism is a principled alternative to LLM-as-judge or full
 episodic memory and respects the OpenEnv validator's deterministic-reward
 constraint. After 12 GRPO steps ($\approx$3\,h\,53\,min on a Colab T4), the
-trained policy reaches \textbf{100\% action-grammar compliance} (0/472 parse
-failures), \textbf{$3.0\!\times$ baseline mean reward} (1.24 vs.\ 0.42), and
-\textbf{$2.5\!\times$ baseline episode length} (43.4 vs.\ 17.3 steps), with
-one $n{=}5$ episode achieving full 100-step survival at near-ceiling reward
-(2.97). Survival-rate improvement (0\%$\rightarrow$20\%) is consistent with these
-deltas given the small eval $N$. The largest remaining bottleneck is the
-simplified reward-hook design (one model action then random rollout), which v2
-addresses via multi-step model rollouts and an additive action-space upgrade
-that lets the v1 LoRA be evaluated zero-shot for transfer measurement.
+step-12 evaluation gives \textbf{100\% action-grammar compliance},
+\textbf{$1.7\!\times$ baseline mean reward} ($0.80$ vs.\ $0.46$),
+\textbf{$2.0\!\times$ baseline episode length} ($37.6$ vs.\ $19.1$ steps),
+and survival rate $0\%\rightarrow 10\%$, with one $n_t{=}10$ episode reaching
+full 100-step survival (reward $1.97$). The largest remaining bottleneck is
+the simplified reward hook (one model action then random rollout); v2
+addresses this via multi-step model rollouts and an additive action-space
+upgrade that lets the v1 LoRA be evaluated zero-shot for transfer measurement.
 
 % ============================================================================
 %  LINKS
@@ -516,7 +505,8 @@ that lets the v1 LoRA be evaluated zero-shot for transfer measurement.
   \item Hugging Face Space (live env): \textit{(deployment pending)}
   \item 2-min demo video: \textit{(recording pending)}
   \item Training run TensorBoard log: \url{https://huggingface.co/noanya/zombiee/tree/main/runs/Apr25_02-16-25_c3b2d410c5bd}
-  \item Evaluation results JSON: \url{https://huggingface.co/noanya/zombiee/blob/main/eval_results/eval_step_0000.json}
+  \item Step-12 eval results: \url{https://huggingface.co/noanya/zombiee/blob/main/eval_results/eval_step_0012.json}
+  \item Cross-checkpoint eval history: \url{https://huggingface.co/noanya/zombiee/blob/main/eval_results/eval_history.png}
   \item Colab training notebook: \texttt{notebooks/train\_colab.ipynb}
   \item Colab eval notebook:     \texttt{notebooks/eval\_colab.ipynb}
 \end{itemize}
