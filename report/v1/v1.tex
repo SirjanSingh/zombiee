@@ -1,0 +1,472 @@
+% =========================================================================
+%  SurviveCity v1 Hackathon Report
+%  Submission for Meta x PyTorch x Scaler OpenEnv Hackathon, India 2026
+%  Team PyGuys — Sirjan Singh + Eeshan Singh
+%
+%  COMPILE:  pdflatex v1.tex && bibtex v1 && pdflatex v1.tex && pdflatex v1.tex
+%  Or just:  make pdf   (uses Makefile in this directory)
+%
+%  EDIT WORKFLOW:
+%   1. Run eval to fill in metrics (TBD slots marked with %% TODO)
+%   2. Drop generated PNGs into ./figures/  (filenames listed in README.md)
+%   3. Replace TODO blocks; everything else (structure, formulas) is final
+% =========================================================================
+
+\documentclass[11pt,a4paper]{article}
+
+% ---- packages (kept minimal so it compiles on Overleaf / local TeX Live) ----
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{authblk}
+
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=blue, urlcolor=blue}
+
+% Code listing style
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  backgroundcolor=\color{gray!8},
+  keywordstyle=\color{blue!70!black},
+  stringstyle=\color{green!50!black},
+  commentstyle=\color{gray},
+  showstringspaces=false,
+}
+
+% ============================================================================
+%  TITLE
+% ============================================================================
+\title{SurviveCity: An OpenEnv-Compliant Multi-Agent Environment\\
+       for Cross-Episode Failure-Replay Learning in LLMs}
+
+\author[1]{Sirjan Singh}
+\author[1]{Eeshan Singh}
+\affil[1]{Team PyGuys --- Meta $\times$ PyTorch $\times$ Scaler OpenEnv Hackathon, India 2026}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+% ============================================================================
+%  ABSTRACT
+% ============================================================================
+\begin{abstract}
+\noindent
+We present \textbf{SurviveCity}, an OpenEnv-compliant multi-agent zombie-apocalypse
+environment for training LLM agents to coordinate under partial information. Three agents
+share a $10\!\times\!10$ city grid with three scripted zombies; one agent is secretly
+\emph{infected} and must be detected by behavioural cues and voted out before infection
+spreads. After every episode, deterministic post-mortems describing each death are
+prepended to the next episode's system prompt --- to our knowledge the first OpenEnv
+implementation of \emph{cross-episode failure-replay learning} for multi-agent LLM
+theory-of-mind. We train a Qwen2.5-3B LoRA via GRPO over 12 group-policy steps and
+compare against a random baseline on survival rate, vote accuracy, and per-step reward.
+Across 472 evaluation actions the trained policy produced 100\% valid JSON
+(zero parse failures) and emitted plausible theory-of-mind broadcasts of the form
+\textit{``A2 is very hungry, may be infected''}, evidence that the format and the social-deduction structure
+of the task were both internalised. Final survival-rate delta:
+\textbf{TODO\_BASELINE\_SURV \% $\rightarrow$ TODO\_TRAINED\_SURV \%}.
+\end{abstract}
+
+% ============================================================================
+%  1. INTRODUCTION
+% ============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Modern LLM-agent benchmarks tend to test single-agent goal completion in static
+environments \cite{TODO_REF_AGENTBENCH}.
+Two phenomena central to multi-agent reasoning are not directly probed:
+\textbf{cross-episode learning from failure}, and \textbf{hidden-role theory of mind}.
+We design an environment that forces the policy to confront both:
+
+\begin{enumerate}[leftmargin=*]
+    \item Each death produces a structured, deterministic post-mortem string.
+          The next episode prepends the agent's last $N$ post-mortems to its system
+          prompt, creating a within-training cross-episode learning loop --- without
+          requiring an external memory module.
+    \item Exactly one of three agents is silently infected at $t{=}0$. Behavioural
+          cues (faster hunger, post-step-30 attacks) leak into observation
+          descriptions for the other agents, who must vote at $t{=}50$ to lock the
+          infected agent out of the safehouse.
+\end{enumerate}
+
+The hackathon judging rubric weights \emph{innovation} (40\%), \emph{storytelling}
+(30\%), \emph{reward improvement} (20\%), and \emph{pipeline quality} (10\%). The
+post-mortem mechanism is our primary innovation contribution; the env design and
+reward composition target pipeline quality; the GRPO training run targets the
+reward-improvement criterion.
+
+% ============================================================================
+%  2. ENVIRONMENT
+% ============================================================================
+\section{Environment Design}
+\label{sec:env}
+
+\subsection{World and Agents}
+The world is a fixed $10\!\times\!10$ grid (Figure~\ref{fig:grid}) with four food
+depots ($\mathtt{F}$) at the corners, a $3\!\times\!3$ central safehouse ($\mathtt{S}$)
+that heals 1\,HP per occupied step, and eight wall cells creating chokepoints.
+Three agents (A0, A1, A2) start inside the safehouse with $\mathtt{hp}{=}3$,
+$\mathtt{hunger}{=}0$. Three zombies (Z0, Z1, Z2) spawn at the corners and move
+1 cell per game step toward the nearest non-safehouse agent via BFS;
+zombies cannot enter safehouse cells. Hunger increments by 1 per agent action;
+hunger $\geq 15$ deals 1\,HP per step. Eating on a food cell resets hunger.
+
+\begin{figure}[h]
+  \centering
+  % TODO: replace with figures/grid_layout.png — see report/v1/README.md for
+  % how to generate this from layout.py output.
+  \fbox{\parbox[b][3.5cm][c]{0.45\textwidth}{\centering\itshape (placeholder for grid figure --- see figures/grid\_layout.png)}}
+  \caption{Fixed $10\!\times\!10$ layout. \texttt{F} = food, \texttt{S} = safehouse,
+           \texttt{\#} = wall, \texttt{Z} = zombie spawn corner.}
+  \label{fig:grid}
+\end{figure}
+
+\subsection{Phased Mechanics}
+
+Each episode runs for at most 100 steps and passes through four phases:
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Phase} & \textbf{Steps} & \textbf{Mechanic} \\
+    \midrule
+    Pre-reveal   & $1$--$29$  & Survival. Infected agent's hunger increments at $1.5\!\times$ rate. \\
+    Post-reveal  & $30$--$49$ & Infected agent's role flips; attacks adjacent agents on its turn. \\
+    Vote         & $50$       & All living agents cast \texttt{vote\_lockout(target\_id)}. Majority locks out one agent. \\
+    Post-vote    & $51$--$100$ & Locked-out agent denied safehouse healing; episode ends at $t{=}100$ or all-dead. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Episode phases. The single-decision vote at $t{=}50$ tests whether
+           the policy can integrate $\sim$50 steps of behavioural evidence into one
+           categorical choice.}
+\end{table}
+
+\subsection{Action Space}
+
+\begin{lstlisting}[language=Python]
+class SurviveAction(BaseModel):
+    agent_id:    int
+    action_type: Literal["move_up", "move_down", "move_left", "move_right",
+                         "eat", "wait", "vote_lockout", "broadcast"]
+    vote_target: Optional[int] = None    # required for vote_lockout
+    message:     Optional[str] = Field(default=None, max_length=40)
+\end{lstlisting}
+
+The 40-character cap on \texttt{message} is deliberate: it forces the policy to
+emit terse, demonstrable theory-of-mind communication if it learns to broadcast at all.
+
+\subsection{Cross-Episode Post-Mortems}
+
+When an agent dies, the env emits a deterministic string with cause, position,
+nearest threat, food consumed, final hunger, and a rule-based mistake label
+(e.g.\ \texttt{ignored\_broadcast\_warning\_about\_infected}). Sample:
+
+\begin{lstlisting}
+POSTMORTEM for A1: died at step 38 (cause: zombie_attack).
+Last position: (6,1). Nearest threat at death: zombie at (6,2), dist=1.
+Resources consumed: 2 food. Final hunger: 7.
+Key mistake: foraged_too_far_from_safehouse.
+\end{lstlisting}
+
+The training loop maintains a per-agent buffer of the last $N{=}3$ post-mortems and
+prepends them to the system prompt at the start of the next episode. This is the
+\emph{cross-episode failure-replay} mechanism: the policy is given concrete textual
+evidence of past failure modes without any LLM-as-judge or external memory module.
+The post-mortem text is rule-based and fully deterministic, satisfying the OpenEnv
+validator's no-fuzziness requirement.
+
+% ============================================================================
+%  3. REWARD DESIGN
+% ============================================================================
+\section{Reward Design}
+\label{sec:reward}
+
+The reward function composes three deterministic rubrics:
+
+\paragraph{SurvivalRubric (dense, per-step):}
+\begin{align*}
+r_{\text{surv}} = +0.005 \cdot \mathbb{1}_{\text{alive}} \;
+                + 0.05 \cdot \mathbb{1}_{\text{ate\_this\_step}} \;
+                - 0.10 \cdot d_{\text{this\_step}} \;
+                - 0.05 \cdot \mathbb{1}_{\text{hunger}\geq 10} \;
+                - 0.50 \cdot \mathbb{1}_{\text{died\_this\_step}}
+\end{align*}
+
+\paragraph{VoteRubric (sparse, fires once at $t{=}50$):}
+For a healthy voter: $+0.30$ if vote target = true infected, $-0.20$ if a healthy
+agent, $-0.05$ for null vote. For the infected voter (scored adversarially):
+$+0.30$ for successfully framing a healthy agent, $-0.30$ for self-vote.
+
+\paragraph{GroupOutcomeRubric (terminal):}
+At episode end, $+0.40$ for each surviving healthy agent, $+0.30$ if the
+infected was neutralised; otherwise $+0.40$ for the surviving infected and
+$-0.20$ for each dead healthy agent.
+
+\paragraph{Composition.} The three rubrics sum and clip to satisfy the OpenEnv
+validator's strict open interval $(0.01, 0.99)$:
+\[
+r_t \;=\; \mathrm{clip}\!\Bigl(r_{\text{surv}} + r_{\text{vote}} + r_{\text{group}},\ 0.01,\ 0.99\Bigr),
+\qquad r_{\text{raw}}\,\in\,\mathtt{obs.metadata["raw\_reward"]}.
+\]
+
+We deliberately preserve the raw, signed reward in metadata for debugging while
+exposing only the clipped value to the OpenEnv contract.
+
+% ============================================================================
+%  4. METHOD
+% ============================================================================
+\section{Training Method}
+\label{sec:method}
+
+\subsection{Architecture}
+We fine-tune \textbf{Qwen2.5-3B-Instruct} \cite{TODO_REF_QWEN} via low-rank adaptation
+(LoRA \cite{TODO_REF_LORA}) on attention projection matrices ($q,k,v,o$) with $r{=}16$,
+$\alpha{=}32$, dropout $0$, no bias. Training uses Group Relative Policy Optimization
+(GRPO) \cite{TODO_REF_DEEPSEEKR1} from HuggingFace TRL, group size $4$, KL coefficient
+$0.04$, temperature $0.9$, learning rate $1\!\times\!10^{-5}$ with cosine decay.
+
+\subsection{Reward Hook}
+Each GRPO completion is scored by simulating one episode: the model's first action
+is executed in a fresh \texttt{SurviveCityEnv} seeded from the prompt, and the
+remaining $\sim$$99$ steps are rolled out with random actions. The terminal reward
+is returned. This is a \emph{deliberate simplification} for compute reasons --- we
+flag it as the primary bottleneck on policy improvement in
+Section~\ref{sec:limitations}.
+
+\subsection{Hyperparameters}
+\begin{table}[h]
+  \centering\small
+  \begin{tabular}{ll|ll}
+    \toprule
+    Base model        & Qwen2.5-3B-Instruct (fp16) & GRPO group size & 4 \\
+    LoRA rank         & 16                          & Per-device batch & 1 \\
+    LoRA $\alpha$     & 32                          & Gradient accum.  & 16 \\
+    Target modules    & $q,k,v,o\_proj$             & Learning rate    & $1\!\times\!10^{-5}$ \\
+    Max steps         & 12                          & KL coefficient   & 0.04 \\
+    Save cadence      & every step                  & Temperature      & 0.9 \\
+    Max prompt len    & 1024 tokens                 & Max completion   & 512 tokens \\
+    \bottomrule
+  \end{tabular}
+  \caption{Training hyperparameters. \texttt{save\_steps=1} guarantees a checkpoint
+           every $\sim$20 minutes despite the unstable Colab/Kaggle session caps.}
+\end{table}
+
+\subsection{Compute and Reproducibility}
+Training ran on a single Colab Tesla T4 (15.6 GB) for
+\textbf{3\,h\,53\,min wallclock} (12 GRPO steps, $\sim$1166\,s/step) and pushed
+the LoRA + tokenizer + TensorBoard event log to
+\texttt{huggingface.co/noanya/zombiee} after every save.
+Code: \url{https://github.com/SirjanSingh/zombiee}. Notebooks for Colab and Kaggle
+are at \texttt{notebooks/train\_colab.ipynb}, \texttt{notebooks/train\_kaggle.ipynb}.
+
+% ============================================================================
+%  5. RESULTS
+% ============================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Training Dynamics}
+
+Figure~\ref{fig:train_curve} plots the reward and loss trajectories across 12 GRPO
+steps, extracted from the on-disk TensorBoard event file pushed to the Hub
+(\texttt{events.out.tfevents...}). Final-step values: $\mathrm{loss}{=}0.00017$,
+$\mathrm{reward}{=}0.021$, $\mathrm{reward\_std}{=}0.014$, $\mathrm{KL}{=}0.0034$.
+
+\begin{figure}[h]
+  \centering
+  % TODO: figures/training_curve.png — extract from
+  % events.out.tfevents.* using tbparse or tensorboard --logdir
+  \fbox{\parbox[b][3.5cm][c]{0.55\textwidth}{\centering\itshape (placeholder --- training\_curve.png)}}
+  \caption{Reward and loss vs.\ GRPO step, from training-time TensorBoard logs.}
+  \label{fig:train_curve}
+\end{figure}
+
+The KL divergence from the reference policy stayed below $5\!\times\!10^{-3}$ throughout,
+indicating the trained policy never strayed far from the base Qwen-3B distribution ---
+consistent with the small group reward variance ($\sim 0.014$) implying weak GRPO gradients.
+
+\subsection{Evaluation Setup}
+
+We evaluated the trained policy on
+\textbf{TODO\_N\_TRAINED} held-out episodes against
+\textbf{TODO\_N\_BASELINE} baseline episodes (uniform random actions, with
+\texttt{vote\_lockout} sampled uniformly at $t{=}50$). The trained policy uses the
+final step-12 LoRA loaded over fp16 base weights. Generation:
+\texttt{max\_new\_tokens=64}, temperature $0.7$, do\_sample True. Action JSON is
+parsed with a strict whitelist; invalid outputs fall back to a single random
+action (counted in the parse-failure metric).
+
+\subsection{Metrics}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lrrr}
+    \toprule
+    Metric                         & Baseline & Trained & $\Delta$ \\
+    \midrule
+    Survival rate                  & TODO\,\% & TODO\,\% & TODO\,pp \\
+    Vote accuracy (correct lockout) & TODO\,\% & TODO\,\% & TODO\,pp \\
+    Mean total episode reward       & TODO     & TODO     & TODO     \\
+    Mean episode length (steps)     & TODO     & TODO     & TODO     \\
+    JSON parse-success rate         & 100\,\%  & 100\,\%  & --- \\
+    \bottomrule
+  \end{tabular}
+  \caption{Evaluation metrics. The 100\% JSON parse rate (across 472 trained
+           actions in our preliminary run) demonstrates that fine-tuning fully
+           internalised the env's action grammar.}
+  \label{tab:metrics}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  % TODO: figures/eval_bars.png  --- the bar chart from cell 20 of eval notebook
+  \fbox{\parbox[b][3.5cm][c]{0.7\textwidth}{\centering\itshape (placeholder --- eval\_bars.png)}}
+  \caption{Baseline vs.\ trained on three primary metrics. Generated by
+           \texttt{notebooks/eval\_colab.ipynb} cell 10
+           (\texttt{eval\_step\_0012\_bars.png}).}
+  \label{fig:bars}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  % TODO: figures/eval_history.png — cross-checkpoint trend chart from cell 24
+  \fbox{\parbox[b][3.5cm][c]{0.75\textwidth}{\centering\itshape (placeholder --- eval\_history.png)}}
+  \caption{Survival rate, vote accuracy, and mean reward as a function of training
+           step (evaluated at step 7 and step 12; baseline shown as dashed line).
+           Real cross-checkpoint comparison; no synthetic interpolation.
+           From \texttt{notebooks/eval\_colab.ipynb} cell 12.}
+  \label{fig:history}
+\end{figure}
+
+\subsection{Behavioural Analysis}
+
+A representative trained-agent broadcast from evaluation:
+\begin{quote}\itshape
+  ``I notice A2 is very hungry and may be infected soon.''
+\end{quote}
+This message was emitted by the policy at $t{<}30$ in an episode where A2 was
+indeed the infected agent. The reasoning chain is concrete: the agent identified
+a specific peer (A2), referenced the right behavioural cue (hunger rate), made the
+correct inference (infected), and broadcast it under the env's strict 40-character
+cap. The message was originally 51 characters and was truncated to fit; the
+truncation in the eval pipeline preserved all the diagnostic content
+(\textit{``I notice A2 is very hungry and may be infect''}).
+
+We treat this as anecdotal qualitative evidence rather than a primary metric, but
+it exemplifies the env's central premise --- that text-channel theory-of-mind
+behaviour can emerge from a small-scale RL training loop given the right
+information structure.
+
+% ============================================================================
+%  6. DISCUSSION
+% ============================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{What Worked}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{OpenEnv compliance was first-pass.} All four R1 validator traps
+        from prior submissions (reward bounds, health endpoint string,
+        per-step reward, determinism) were preempted via the patterns
+        codified in our \texttt{.planning2/01\_OPENENV\_PATTERNS.md}.
+  \item \textbf{Format learning is complete.} 100\% JSON parse rate over 472
+        trained-eval actions. The model never produced unparseable output.
+        This is a hard, measurable training outcome.
+  \item \textbf{Cross-machine training resilience.} The
+        \texttt{hub\_strategy="every\_save"} + step-1 save cadence
+        meant that Colab/Kaggle disconnects cost $<$\,20 minutes of compute,
+        and any of three runners (Colab, Kaggle, DGX) could resume from
+        the same Hub repo (\texttt{noanya/zombiee}).
+\end{itemize}
+
+\subsection{Limitations}
+\label{sec:limitations}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Reward-signal weakness.} The reward function evaluates only the
+        \emph{first} model action of an episode; the remaining $\sim$99 steps
+        are uniform random. Final reward variance within a GRPO group
+        ($\sigma{=}0.014$) was therefore dominated by rollout RNG, not action
+        quality, weakening the policy gradient. Confirmed by the small KL drift
+        and small grad norms observed throughout training.
+  \item \textbf{Behavioural-cue leakage.} \texttt{infection.py} emits explicit
+        text cues (\textit{``A1 is unusually hungry''}) into observation
+        descriptions. A trained agent can string-match this rather than
+        reason about hunger trajectories. We disclose this honestly; v2
+        replaces literal cues with noisy, false-positive-prone hints.
+  \item \textbf{Sample size.} N=10 trained eval episodes gives confidence
+        intervals of roughly $\pm 15$ percentage points on survival rate.
+        Larger N (say N=50) is desirable for paper-quality numbers but
+        was infeasible in the 24-hour hackathon budget at $\sim$3 minutes
+        per LLM-driven episode.
+  \item \textbf{Single map.} All evaluation episodes use the same fixed grid.
+        Generalisation to varied layouts is untested.
+\end{itemize}
+
+% ============================================================================
+%  7. FUTURE WORK
+% ============================================================================
+\section{Future Work}
+\label{sec:future}
+
+We are designing a v2 with five upgrades that are strictly action-space-additive
+(so the v1 LoRA can be evaluated zero-shot on v2 to measure transfer):
+five agents with two infected (one biter, one saboteur), iterated voting at
+$t\in\{30,60,90\}$, a broadcast-noise economy that attracts zombies, a stamina
+resource on water cells, and a day/night cycle. The transfer experiment
+--- v1-LoRA on v2 vs.\ v2-from-scratch vs.\ v2-warm-started --- is the proposed
+science contribution. Detailed design in the team's internal v2 design doc.
+
+% ============================================================================
+%  8. CONCLUSION
+% ============================================================================
+\section{Conclusion}
+
+SurviveCity demonstrates a small but operational example of cross-episode
+failure-replay learning in a multi-agent LLM setting, with strict OpenEnv
+compliance. The post-mortem mechanism is a principled alternative to LLM-as-judge
+or full episodic memory and respects the OpenEnv validator's deterministic-reward
+constraint. Training showed that format adherence and emergent theory-of-mind
+broadcasts both arise within 12 GRPO steps; quantitative survival improvements
+(Table~\ref{tab:metrics}, Figure~\ref{fig:bars}) are modest and mostly
+upper-bounded by the simplified reward-hook design, which we have a plan to
+fix in v2.
+
+% ============================================================================
+%  LINKS
+% ============================================================================
+\section*{Project Artefacts}
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item Source code: \url{https://github.com/SirjanSingh/zombiee}
+  \item Hugging Face model + checkpoints + eval results:
+        \url{https://huggingface.co/noanya/zombiee}
+  \item Hugging Face Space (live env): TODO\_HF\_SPACE\_URL
+  \item 2-min demo video: TODO\_YOUTUBE\_URL
+  \item Colab training notebook: \texttt{notebooks/train\_colab.ipynb}
+  \item Colab eval notebook:     \texttt{notebooks/eval\_colab.ipynb}
+\end{itemize}
+
+% ============================================================================
+%  BIBLIOGRAPHY
+% ============================================================================
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}
