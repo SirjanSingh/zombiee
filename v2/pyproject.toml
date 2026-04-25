@@ -45,7 +45,11 @@ train = [
     "datasets==2.19.1",
     "accelerate==0.30.1",
     "bitsandbytes>=0.41",
-    "torchao==0.7.0",
+    # torchao is intentionally NOT listed — see Dockerfile.dgx for the full
+    # rationale. Short version: peft >=0.13 demands torchao >= 0.16.0 OR not
+    # installed at all. Newer torchao breaks torch 2.5 (uses torch.int1).
+    # We train in bf16 (no torchao quant), so the right answer is to leave
+    # torchao uninstalled entirely.
     "matplotlib>=3.8",
     "numpy>=1.24",
     "huggingface_hub>=0.20",

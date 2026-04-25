@@ -71,26 +71,38 @@ RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
     "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
 
-# Pin torchao to 0.7.0 — last release compatible with torch 2.5.x.
-# Newer torchao (>=0.8) references torch.int1 (only present in torch 2.6+),
-# and transformers/quantizers/auto.py imports torchao eagerly at module load,
-# breaking `import unsloth` / `import transformers` with AttributeError.
-RUN pip install --no-cache-dir --force-reinstall --no-deps \
-    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "torchao==0.7.0"
+# torchao gymnastics, take 2:
+#
+#   * Newer torchao (>=0.8) references `torch.int1` which only exists in
+#     torch 2.6+. transformers/quantizers/auto.py imports torchao eagerly, so
+#     a torchao install on torch 2.5 raises AttributeError at module load.
+#   * The "obvious" fix — pinning torchao==0.7.0 — works for `import transformers`
+#     but trips peft >=0.13's `is_torchao_available()` strict check, which DEMANDS
+#     torchao >= 0.16.0. peft fires this check pre-emptively in every LoRA
+#     dispatcher chain even when no torchao layers are present in the model.
+#   * We don't actually USE torchao quantisation (we train in bf16). So the
+#     correct move is to UNINSTALL torchao entirely. transformers' eager import
+#     is wrapped in try/except ImportError; an absent torchao module returns
+#     None and everything downstream falls back to the standard path. peft's
+#     is_torchao_available() returns False cleanly (no exception), and
+#     dispatch_torchao gets skipped in favour of the Linear dispatcher for
+#     q,k,v,o_proj — which is what we want.
+RUN pip uninstall -y torchao || true
 
-# Sanity-check the import chain so the build fails fast if torchao regresses.
+# Sanity-check the import chain so the build fails fast if anything else regresses.
 # Skip `import unsloth` here — unsloth_zoo runs a CUDA-availability probe at
 # import time, and `docker build` has no GPU exposed (only `docker run --gpus`).
-# The real regression we are guarding against is transformers/quantizers/auto.py
-# eagerly importing torchao and hitting `torch.int1`, so we exercise that path.
-RUN python -c "import torch, torchao, transformers; \
+RUN python -c "import torch, transformers, peft; \
 from transformers.processing_utils import Unpack; \
 from transformers.quantizers.auto import AutoHfQuantizer; \
+import importlib.util; \
+ta = importlib.util.find_spec('torchao'); \
 print('torch', torch.__version__); \
-print('torchao', torchao.__version__); \
 print('transformers', transformers.__version__); \
-print('quantizer import chain ok')"
+print('peft', peft.__version__); \
+print('torchao', 'absent (intended)' if ta is None else 'PRESENT (unexpected)'); \
+assert ta is None, 'torchao should be uninstalled at build time'; \
+print('import chain ok')"
 
 # Logging / plotting / hub
 RUN pip install --no-cache-dir \
