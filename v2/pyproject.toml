@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "survivecity-v2"
+version = "2.0.0"
+description = "SurviveCity v2 — 5-agent multi-resource env with bite transmission, zombie waves, iterated voting, and inventory."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Sirjan Singh"},
+    {name = "Eeshan Singh"},
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "fastapi>=0.104",
+    "uvicorn[standard]>=0.24",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.1",
+    "transformers>=4.37",
+    "trl>=0.7",
+    "peft>=0.7",
+    "bitsandbytes>=0.41",
+    "datasets>=2.16",
+    "accelerate>=0.27",
+    "matplotlib>=3.8",
+    "numpy>=1.24",
+    "huggingface_hub>=0.20",
+    "tensorboard",
+]
+unsloth = [
+    "unsloth",
+]
+dev = [
+    "pytest>=7.4",
+    "httpx>=0.25",
+    "ruff>=0.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["survivecity_v2_env*", "server*", "training*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"

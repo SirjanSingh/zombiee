@@ -1,0 +1,24 @@
+# v2 local artefacts — never commit these
+checkpoints/checkpoint-*
+checkpoints/adapter_*
+checkpoints/tokenizer*
+checkpoints/special_tokens*
+checkpoints/runs/
+checkpoints/_resume/
+eval_results/*.json
+eval_results/*.png
+results/*.json
+results/*.png
+results/transcripts/
+
+# Keep the dirs themselves
+!checkpoints/.gitkeep
+!eval_results/.gitkeep
+!results/.gitkeep
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
