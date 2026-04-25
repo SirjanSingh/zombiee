@@ -71,6 +71,16 @@ RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
     "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
 
+# `mergekit` is an OPTIONAL TRL dependency on paper, but TRL 0.15+ imports it
+# unconditionally from `trl/trainer/callbacks.py:40` via `mergekit_utils.py`.
+# Without this, `from trl import GRPOTrainer` raises:
+#     ModuleNotFoundError: No module named 'mergekit'
+# even though we don't use any merge functionality. Install it explicitly so
+# the trl import chain works.
+RUN pip install --no-cache-dir \
+    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    "mergekit"
+
 # torchao gymnastics, take 2:
 #
 #   * Newer torchao (>=0.8) references `torch.int1` which only exists in
@@ -89,20 +99,39 @@ RUN pip install --no-cache-dir \
 #     q,k,v,o_proj — which is what we want.
 RUN pip uninstall -y torchao || true
 
-# Sanity-check the import chain so the build fails fast if anything else regresses.
-# Skip `import unsloth` here — unsloth_zoo runs a CUDA-availability probe at
-# import time, and `docker build` has no GPU exposed (only `docker run --gpus`).
-RUN python -c "import torch, transformers, peft; \
+# Full-path sanity check: simulate the EXACT imports `training/train.py` uses,
+# so any future transitive-dep regression fails `docker build` instead of
+# crashing the actual 12-hour training run. We skip `import unsloth` (its
+# CUDA probe needs a GPU which docker build doesn't have) but exercise every
+# OTHER module the training script touches.
+RUN python -c "\
+import importlib.util; \
+import torch; \
+import transformers; \
+import peft; \
+import datasets; \
+import accelerate; \
+import bitsandbytes; \
+import huggingface_hub; \
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig; \
 from transformers.processing_utils import Unpack; \
 from transformers.quantizers.auto import AutoHfQuantizer; \
-import importlib.util; \
+from peft import get_peft_model, LoraConfig, prepare_model_for_kbit_training, PeftModel; \
+from trl import GRPOTrainer, GRPOConfig; \
 ta = importlib.util.find_spec('torchao'); \
-print('torch', torch.__version__); \
+mk = importlib.util.find_spec('mergekit'); \
+print('torch       ', torch.__version__); \
 print('transformers', transformers.__version__); \
-print('peft', peft.__version__); \
-print('torchao', 'absent (intended)' if ta is None else 'PRESENT (unexpected)'); \
+print('peft        ', peft.__version__); \
+print('datasets    ', datasets.__version__); \
+print('accelerate  ', accelerate.__version__); \
+import trl; print('trl         ', trl.__version__); \
+print('bitsandbytes', bitsandbytes.__version__); \
+print('torchao     ', 'absent (intended)' if ta is None else 'PRESENT (unexpected)'); \
+print('mergekit    ', 'present' if mk is not None else 'ABSENT (would break trl)'); \
 assert ta is None, 'torchao should be uninstalled at build time'; \
-print('import chain ok')"
+assert mk is not None, 'mergekit must be installed for trl GRPO imports'; \
+print('FULL TRAINING IMPORT CHAIN OK')"
 
 # Logging / plotting / hub
 RUN pip install --no-cache-dir \
