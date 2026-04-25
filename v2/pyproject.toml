@@ -46,10 +46,14 @@ train = [
     "trl==0.15.2",
     "bitsandbytes>=0.43",
     # trl 0.15+ chain-imports mergekit + llm_blender unconditionally.
-    # Without these, `from trl import GRPOTrainer` raises ModuleNotFoundError.
-    # We don't actually use merge or judge functionality.
+    # We install mergekit normally, but llm-blender on pypi has heavy deps
+    # (dataclasses_json, sentence-transformers, pytorch-lightning, etc.)
+    # that drag in incompatible versions of transformers. Since trl only
+    # IMPORTS llm_blender (never instantiates judges in our GRPO code),
+    # the Dockerfile.dgx replaces it with a tiny stub. If you're using
+    # `pip install -e v2/[train]` outside the Dockerfile, install only
+    # mergekit; the stub creation is Dockerfile-only.
     "mergekit",
-    "llm-blender",
     "matplotlib>=3.8",
     "numpy>=1.24",
     "huggingface_hub>=0.20",

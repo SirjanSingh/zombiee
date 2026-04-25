@@ -22,17 +22,32 @@
 # and `trl` 0.15+ has unconditional optional-integration imports that the
 # rest of the ecosystem hasn't caught up with.
 #
-# DECISION: drop Unsloth, pin trl==0.15.2 with mergekit + llm_blender.
-# We initially tried trl 0.13.0 hoping to skip the mergekit/llm_blender
-# chain, but trl 0.13's `from trl import GRPOTrainer` doesn't expose it
-# at the top level — only via deeper module paths — so it doesn't actually
-# work for our import chain. trl 0.15.2 is the first version where the
-# top-level export is reliable.
+# DECISION: drop Unsloth, pin trl==0.15.2, install mergekit, and STUB OUT
+# llm_blender as a tiny in-place package (instead of installing the real
+# one from pypi).
 #
-# Cost: we have to install mergekit (full) + llm-blender (--no-deps) and
-# patch transformers/utils/hub.py to add the legacy `TRANSFORMERS_CACHE`
-# constant that llm_blender imports. The patches are idempotent, the deps
-# are fixed, and the smoke test verifies everything before training starts.
+# Why stub instead of install? llm_blender's runtime dep tree is huge
+# (dataclasses_json, sentence-transformers, pytorch-lightning, ...) and
+# they conflict with our pinned transformers/peft stack. But trl only
+# does `import llm_blender` at module load — our GRPO code never
+# instantiates a judge. So a 6-line stub package with a fake `Blender`
+# class is sufficient to make `from trl import GRPOTrainer` succeed,
+# without dragging in any of the real package's dependencies.
+#
+# We tried trl 0.13.0 first hoping to skip the mergekit/llm_blender
+# chain, but trl 0.13's `from trl import GRPOTrainer` doesn't expose
+# it at the top level — only via deeper module paths — so it doesn't
+# actually work for our import chain. trl 0.15.2 is the first version
+# where the top-level export is reliable.
+#
+# Insurance patches:
+#   * transformers/utils/hub.py gets a TRANSFORMERS_CACHE alias appended
+#     in case any optional dep still references the legacy constant
+#     (cheap, idempotent, doesn't hurt if unused).
+#
+# The smoke test exercises every import the training script triggers,
+# so any future regression fails `docker build` instead of crashing the
+# 12-hour run.
 #
 # Tradeoff: lose Unsloth's fast kernels (~20-30% slower per step). For our
 # 15-step / 12-hour run, this is fine — even with the slowdown we finish
@@ -92,22 +107,44 @@ RUN pip install --no-cache-dir \
     "mergekit"
 
 # Patch transformers.utils.hub.py to add the legacy `TRANSFORMERS_CACHE`
-# constant. The latest llm_blender on pypi imports this name, but
-# transformers renamed it to HF_HUB_CACHE. Without this patch, importing
-# llm_blender (which trl 0.15+ does unconditionally via judges.py) raises
-# ImportError. Idempotent — only appends if not already present.
+# constant. Some libs (incl. llm_blender) still reference the old name.
+# Even with our llm_blender stub below, this patch is cheap insurance.
 RUN HUB_PY=/usr/local/lib/python3.11/dist-packages/transformers/utils/hub.py \
  && grep -q '^TRANSFORMERS_CACHE' "$HUB_PY" \
     || printf '\n# Legacy alias for libs that haven'\''t caught up to the rename (added by Dockerfile.dgx)\nTRANSFORMERS_CACHE = HF_HUB_CACHE if "HF_HUB_CACHE" in dir() else "~/.cache/huggingface/hub"\n' >> "$HUB_PY"
 
-# llm_blender for trl judges chain. Use `--no-deps` so its own deps
-# (sentence-transformers, etc.) don't drag in incompatible transformers
-# versions that would clobber our pinned 4.46.3. trl only IMPORTS the
-# top-level llm_blender module — it doesn't actually USE any judge
-# functionality in our GRPO code path, so missing internal deps are fine.
-RUN pip install --no-cache-dir --no-deps \
-    --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "llm-blender"
+# Stub out `llm_blender` instead of installing the real one.
+#
+# Why: trl 0.15.2's `judges.py` does `import llm_blender` unconditionally,
+# but the real package on pypi has heavy runtime deps (dataclasses_json,
+# sentence-transformers, pytorch-lightning, etc.) that drag in incompatible
+# versions of transformers / cause cascading dep failures. Our GRPO code
+# never instantiates a judge — `import llm_blender` only needs the module
+# to BE IMPORTABLE.
+#
+# Solution: replace the package with a 1-class stub. trl's module load
+# succeeds; if anything DOES try to use llm_blender.Blender at runtime,
+# it raises a clear RuntimeError instead of crashing in some library
+# deep in the stack. Free, robust, no dep cascade.
+RUN pip uninstall -y llm-blender 2>/dev/null || true \
+ && rm -rf /usr/local/lib/python3.11/dist-packages/llm_blender \
+ && mkdir -p /usr/local/lib/python3.11/dist-packages/llm_blender \
+ && printf '%s\n' \
+    '"""Stub llm_blender — survivecity-v2-dgx does not use judge functionality."""' \
+    '' \
+    'class Blender:' \
+    '    """Stub. The real llm_blender package conflicts with our pinned stack."""' \
+    '    def __init__(self, *args, **kwargs):' \
+    '        raise RuntimeError(' \
+    '            "llm_blender.Blender is stubbed in survivecity-v2-dgx. "' \
+    '            "Our GRPO pipeline does not use judges. If you need this, "' \
+    '            "build a separate image with the full llm-blender package."' \
+    '        )' \
+    '    def loadranker(self, *args, **kwargs): pass' \
+    '    def loadfuser(self, *args, **kwargs): pass' \
+    '    def rank(self, *args, **kwargs): raise RuntimeError("llm_blender stubbed")' \
+    '    def fuse(self, *args, **kwargs): raise RuntimeError("llm_blender stubbed")' \
+    > /usr/local/lib/python3.11/dist-packages/llm_blender/__init__.py
 
 # Belt-and-suspenders: ensure torchao is NOT installed. peft >=0.13's
 # strict torchao version check fires pre-emptively in dispatch chains;
