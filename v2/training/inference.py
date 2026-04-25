@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger("survivecity_v2.inference")
@@ -30,28 +31,56 @@ RANDOM_NON_VOTE_ACTIONS = [
     "eat", "drink", "wait", "pickup",
 ]
 
+# Regex fallbacks for lenient parsing (used when strict JSON fails).
+# Pattern matches: action_type: "move_up" / action_type="move_up" /
+# "action_type": move_up / action_type = "move_up" / etc.
+_ACTION_TYPE_RE = re.compile(
+    r"""action_type[\s"']*[:=]+[\s"']*(\w+)""", re.IGNORECASE
+)
+_VOTE_TARGET_RE   = re.compile(r"""vote_target[\s"']*[:=]+[\s"']*(\d+)""", re.IGNORECASE)
+_SCAN_TARGET_RE   = re.compile(r"""scan_target[\s"']*[:=]+[\s"']*(\d+)""", re.IGNORECASE)
+_INJECT_TARGET_RE = re.compile(r"""inject_target[\s"']*[:=]+[\s"']*(\d+)""", re.IGNORECASE)
+_GIFT_TARGET_RE   = re.compile(r"""gift_target[\s"']*[:=]+[\s"']*(\d+)""", re.IGNORECASE)
+_ITEM_SLOT_RE     = re.compile(r"""item_slot[\s"']*[:=]+[\s"']*(\d+)""", re.IGNORECASE)
+_MESSAGE_RE       = re.compile(r"""message[\s"']*[:=]+[\s"']*["']([^"']{1,40})["']""", re.IGNORECASE)
+
 
 def parse_action(text: str, agent_id: int) -> Optional[dict]:
-    """Parse a JSON action from model output. Tolerates markdown fences and
-    leading/trailing prose; returns None if no valid action_type can be
-    extracted.
+    """Parse an action from model output.
+
+    Tries three strategies in order:
+      1. Strict JSON object extraction (any {...} substring that loads).
+      2. Regex extraction of `action_type: <word>` and optional fields
+         from prose like "I'll move_up" or `action_type=eat`.
+      3. Last-resort: scan for any literal valid action_type word
+         anywhere in the text (catches "I will move_up to the food cell").
+
+    Returns None only if NONE of the 14 valid action_types appears
+    anywhere in the completion. This is critical for GRPO — if every
+    completion in a group returns None, all rewards floor at 0.01,
+    `reward_std=0`, and the gradient signal is dead.
     """
+    if not text:
+        return None
     text = text.strip()
-    # Markdown code-fence stripping
-    if text.startswith("```"):
-        parts = text.split("```")
+
+    # Strip markdown code fences if present
+    fenced = text
+    if fenced.startswith("```"):
+        parts = fenced.split("```")
         if len(parts) >= 2:
             inner = parts[1]
             if inner.startswith("json"):
                 inner = inner[4:]
-            text = inner.strip()
-    # Find a JSON object within the text
-    for start in range(len(text)):
-        if text[start] == "{":
-            for end in range(len(text), start, -1):
-                if text[end - 1] == "}":
+            fenced = inner.strip()
+
+    # --- Strategy 1: strict JSON extraction ---
+    for start in range(len(fenced)):
+        if fenced[start] == "{":
+            for end in range(len(fenced), start, -1):
+                if fenced[end - 1] == "}":
                     try:
-                        d = json.loads(text[start:end])
+                        d = json.loads(fenced[start:end])
                         if not isinstance(d, dict):
                             continue
                     except (json.JSONDecodeError, TypeError):
@@ -59,6 +88,39 @@ def parse_action(text: str, agent_id: int) -> Optional[dict]:
                     d.setdefault("agent_id", agent_id)
                     if d.get("action_type") in VALID_ACTION_TYPES:
                         return d
+
+    # --- Strategy 2: regex-extract action_type + optional fields ---
+    m = _ACTION_TYPE_RE.search(text)
+    if m:
+        atype = m.group(1).lower()
+        if atype in VALID_ACTION_TYPES:
+            result: dict[str, Any] = {"agent_id": agent_id, "action_type": atype}
+            for field, regex in (
+                ("vote_target",   _VOTE_TARGET_RE),
+                ("scan_target",   _SCAN_TARGET_RE),
+                ("inject_target", _INJECT_TARGET_RE),
+                ("gift_target",   _GIFT_TARGET_RE),
+                ("item_slot",     _ITEM_SLOT_RE),
+            ):
+                fm = regex.search(text)
+                if fm:
+                    try:
+                        result[field] = int(fm.group(1))
+                    except ValueError:
+                        pass
+            mm = _MESSAGE_RE.search(text)
+            if mm:
+                result["message"] = mm.group(1)[:40]
+            return result
+
+    # --- Strategy 3: last-resort word scan ---
+    # Lowercase scan so "Move_up" / "MOVE_UP" still match. Sort by length
+    # so "move_up" matches before "move" (no false-positive on "move").
+    text_lower = text.lower()
+    for atype in sorted(VALID_ACTION_TYPES, key=len, reverse=True):
+        if atype in text_lower:
+            return {"agent_id": agent_id, "action_type": atype}
+
     return None
 
 

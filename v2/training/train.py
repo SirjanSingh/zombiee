@@ -165,7 +165,7 @@ def parse_args():
     p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--max-prompt-length", type=int, default=1536)
     p.add_argument("--max-completion-length", type=int, default=512)
-    p.add_argument("--temperature", type=float, default=0.9)
+    p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--beta", type=float, default=0.04)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-scenarios", type=int, default=200)

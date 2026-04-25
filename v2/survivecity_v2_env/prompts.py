@@ -57,11 +57,20 @@ Field rules:
 
 Unused fields can be null/omitted.
 
+== EXAMPLES (copy this exact format) ==
+{{"action_type": "move_up"}}
+{{"action_type": "eat"}}
+{{"action_type": "drink"}}
+{{"action_type": "vote_lockout", "vote_target": 2}}
+{{"action_type": "broadcast", "message": "I think A2 is infected"}}
+{{"action_type": "pickup", "item_type": "medicine"}}
+{{"action_type": "inject", "inject_target": 0, "item_slot": 0}}
+
 {past_failures}
 == CURRENT SITUATION ==
 {situation}
 
-Respond with ONLY the JSON action. No explanation.
+Respond with ONLY the JSON action on a single line, like the examples above. No explanation, no markdown, no commentary.
 """
 
 
