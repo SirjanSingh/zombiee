@@ -14,6 +14,7 @@ Files 06-08 cover what actually shipped + the v2 follow-on.
 | 06 | `06_V1_FINAL_STATE.md` | **What actually shipped as v1**: file map, training results, step-12 eval numbers, Hub artefacts. |
 | 07 | `07_V2_DESIGN_AND_IMPL.md` | v2 design + implementation summary. File-by-file walkthrough, action/reward references, train/eval/simulator commands. |
 | 08 | `08_REPO_LAYOUT.md` | Top-level repo layout after the v1/ reorg. What stays at root vs lives in v1/ vs v2/. |
+| 09 | `09_V1_VS_V2_COMPARISON.md` | **Side-by-side tables**: problem-statement gaps, mechanics, action space, rubrics, hyperparameters, file diff, and root-cause traceback (why each v2 change exists). |
 
 ## Repo state (2026-04-25)
 
