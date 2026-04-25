@@ -1,33 +1,37 @@
-# Cross-machine training (Kaggle ⇄ DGX)
+# Cross-machine training (Colab ⇄ Kaggle ⇄ DGX)
 
-The DGX is shared and frequently saturated. This directory contains a Kaggle
-notebook that runs the same GRPO training as `Dockerfile.dgx`, using the
-**Hugging Face Hub** as a checkpoint bridge so the run can hop between the two
-without losing progress.
+Free GPU sessions disconnect frequently. These notebooks run the same GRPO
+training loop and use the **Hugging Face Hub** as a checkpoint bridge so the
+run can hop between machines without losing progress.
 
 ## Files
 
-| Path | Purpose |
-|---|---|
-| `train_kaggle.ipynb` | Self-contained Kaggle notebook. Installs deps, clones the repo, starts the env server, runs `training/train.py`, pushes checkpoints to the Hub after every save. |
+| Path | Target | Purpose |
+|---|---|---|
+| `train_colab.ipynb` | Google Colab (T4) | Installs deps, clones the repo (private-repo-safe via `http.extraheader`), starts the env server, runs `training/train.py`, pushes a checkpoint to HF Hub after every gradient update. |
+| `train_kaggle.ipynb` | Kaggle (T4 / P100 / L4) | Same flow as the Colab notebook, but uses `kaggle_secrets.UserSecretsClient` and `/kaggle/working` paths. |
+
+Both notebooks share defaults: `MAX_STEPS=12`, `SAVE_STEPS=1`, `NUM_GENERATIONS=4`,
+`gradient_accumulation_steps=16` (set in `training/train.py`). On a T4 each
+GRPO step takes ~15-20 min, so you get a checkpoint roughly every 20 minutes
+and a full run finishes in ~3-4h.
 
 ## How resume works end-to-end
 
 ```
               ┌─────────── Hugging Face Hub ───────────┐
-              │   sirjansingh/zombiee-qwen-grpo-lora    │
-              │   ├── checkpoint-100/                   │
-              │   ├── checkpoint-200/                   │
+              │   <user>/<repo>                         │
+              │   ├── checkpoint-1/                     │
+              │   ├── checkpoint-2/                     │
               │   ├── trainer_state.json                │
               │   └── adapter_model.safetensors         │
               └──────────────┬──────────────────────────┘
                   push_to_hub │             │ resume_from_checkpoint
                               ▼             ▼
-              ┌─────────────────┐   ┌──────────────────┐
-              │ Kaggle notebook │   │ DGX docker run   │
-              │  (T4 / P100)    │   │  (V100, when     │
-              │                 │   │   GPU is free)   │
-              └─────────────────┘   └──────────────────┘
+        ┌─────────────────┐ ┌─────────────────┐ ┌──────────────────┐
+        │ Colab notebook  │ │ Kaggle notebook │ │ DGX docker run   │
+        │  (T4)           │ │  (T4 / P100)    │ │  (V100)          │
+        └─────────────────┘ └─────────────────┘ └──────────────────┘
 ```
 
 `training/train.py` accepts:
@@ -39,22 +43,44 @@ without losing progress.
   - `<user/repo>` — `snapshot_download` from the Hub, then resume
 - `--save-total-limit N` — keep only the last `N` checkpoints on disk (older ones are deleted; older ones on the Hub stay until you prune the repo).
 
-## First-time Kaggle setup
+## Required secrets (both notebooks)
 
-1. **Push the latest code to GitHub** (`git push origin master`) so the notebook can clone it.
-2. On <https://huggingface.co/settings/tokens>, create a token with **Write** permissions.
-3. Open `notebooks/train_kaggle.ipynb` on Kaggle (File → Import Notebook → upload it, or use *New Notebook* and paste).
-4. Settings:
-   - **Accelerator**: `GPU T4 x1` (best free option). `P100` and `L4` also work; the script auto-detects bf16 vs fp16.
-   - **Internet**: On.
-   - **Persistence**: Variables and Files.
-5. **Add-ons → Secrets** → add `HUGGINGFACE_TOKEN` = your token, attach to notebook.
-6. In the *Configuration* cell, set `HUB_MODEL_ID` to your own HF user/repo (e.g. `sirjansingh/zombiee-qwen-grpo-lora`).
-7. **Run All**. (Or *Save Version → Save & Run All (Commit)* to run headless on Kaggle infra and free up the tab.)
+| Secret | Scope | Purpose |
+|---|---|---|
+| `GITHUB_TOKEN` | Fine-grained PAT with `Contents: Read` on the repo (or classic with `repo`) | Authenticate `git clone` for the private repo |
+| `HF_TOKEN` | HuggingFace token, **write** | Push checkpoints to your HF Hub repo |
 
-The Hub repo is auto-created on first push.
+The clone cell embeds the GitHub token into a `git -c http.extraheader=...`
+config so it never appears in `argv` or tracebacks. Errors are scrubbed before
+being raised. Use a fine-grained PAT scoped to a single repo to limit blast
+radius if a token leaks.
 
-## Resuming on the DGX once a GPU is free
+## First-time setup
+
+### Colab
+
+1. Push the latest code to GitHub so the notebook can clone it
+2. Open `notebooks/train_colab.ipynb` on Colab (File → Open → GitHub, or upload the file)
+3. Runtime → Change runtime type → T4 GPU
+4. 🔑 Secrets (left sidebar) → add `GITHUB_TOKEN` and `HF_TOKEN`, toggle Notebook access ON for both
+5. Edit `HUB_MODEL_ID` in the Configuration cell
+6. Runtime → Run All
+
+After the install cell (cell 3) finishes the first time, do **Runtime → Restart Session** then **Run All** again so the upgraded packages are picked up cleanly.
+
+### Kaggle
+
+1. Push the latest code to GitHub
+2. Open `notebooks/train_kaggle.ipynb` on Kaggle (File → Import Notebook)
+3. Settings:
+   - Accelerator: `GPU T4 x1` (P100 or L4 also work)
+   - Internet: On
+   - Persistence: Variables and Files
+4. Add-ons → Secrets → add `GITHUB_TOKEN` and `HF_TOKEN`, attach both to the notebook
+5. Edit `HUB_MODEL_ID` in the Configuration cell
+6. Run All (or *Save Version → Save & Run All (Commit)* to run headless on Kaggle's infra and free up the tab)
+
+### DGX
 
 ```bash
 git pull
@@ -66,35 +92,49 @@ docker run --rm --gpus '"device=N"' --shm-size=8g \
   survivecity-train \
   bash -c "uvicorn server.app:app --host 0.0.0.0 --port 7860 & sleep 3 && \
     python -m training.train \
-      --resume-from-checkpoint sirjansingh/zombiee-qwen-grpo-lora \
-      --push-to-hub --hub-model-id sirjansingh/zombiee-qwen-grpo-lora \
+      --resume-from-checkpoint <user>/<repo> \
+      --push-to-hub --hub-model-id <user>/<repo> \
       --max-steps 4000 \
       --output-dir /app/lora_v1"
 ```
 
-Replace `device=N` with whichever GPU is free (`nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -n -r | head`) and `hf_xxx` with your token.
+Pick a free GPU index with:
+```
+nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -n -r | head
+```
 
-The same Hub repo will accept pushes from both Kaggle and DGX — `every_save`
-uploads create a new commit each time, and `--resume-from-checkpoint` always
-pulls the most recent `trainer_state.json` + adapter weights.
+## Resuming after a session timeout
 
-## Resuming on Kaggle (after a 12-h timeout)
+Just re-run the notebook (or the DGX command) end-to-end. Cell 6
+(*Detect Existing Checkpoints on Hub*) sees the existing artifacts on the Hub
+and prepends `--resume-from-checkpoint <repo>` to the launch command
+automatically.
 
-Just re-run the notebook. Cell 6 (`Detect existing checkpoints on the Hub`)
-sees the existing artifacts and prepends `--resume-from-checkpoint <repo>` to
-the launch command automatically.
+## Memory-tightening knobs (if a free T4 OOMs)
 
-## Memory-tightening knobs (if Kaggle's T4 OOMs)
-
-In the *Configuration* cell of the notebook, lower:
+In the Configuration cell of either notebook, lower:
 
 - `NUM_GENERATIONS` (4 → 2 → 1) — biggest activation-memory lever in GRPO
 - `MAX_SEQ_LENGTH` (2048 → 1024)
 - `MODEL_NAME` → `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit` (last resort)
 
+`training/train.py` also auto-throttles `num_generations` based on free VRAM:
+< 6 GB → 2, < 12 GB → 4. So usually you don't need to touch it manually.
+
 The DGX (V100 32 GB) can run the full Qwen2.5-3B / `NUM_GENERATIONS=8` /
 `MAX_SEQ_LENGTH=4096` config from `Dockerfile.dgx`'s default `CMD`; Kaggle's
 16 GB T4 needs the trimmed defaults shown in the notebook.
+
+## Why so many short steps instead of one long run?
+
+Free Colab/Kaggle sessions die unpredictably (idle timeout, queue eviction,
+flaky network). With `MAX_STEPS=500 / SAVE_STEPS=50` the first save fires
+~3h into training; if you get killed at 2h you have nothing. With
+`MAX_STEPS=12 / SAVE_STEPS=1` the first save fires after step 1 (~20 min) and
+every step after that. Worst-case you lose 19 min of compute, not 3h.
+
+For long stable runs (DGX, paid Colab Pro+) bump `MAX_STEPS` and relax
+`SAVE_STEPS` — the same notebook works.
 
 ## "My Colab/Kaggle session died — did I lose anything?"
 

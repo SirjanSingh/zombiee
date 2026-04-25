@@ -92,6 +92,28 @@ docker build -t survivecity .
 docker run -p 7860:7860 survivecity
 ```
 
+### Training on Colab (free T4)
+
+`notebooks/train_colab.ipynb` is a self-contained runner. Setup:
+
+1. Runtime → T4 GPU
+2. 🔑 Secrets → add `GITHUB_TOKEN` (PAT with read access to this repo) and `HF_TOKEN` (write scope)
+3. Edit `HUB_MODEL_ID` in cell 1 to your HF user/repo
+4. Runtime → Run All
+
+Defaults are `MAX_STEPS=12` / `SAVE_STEPS=1` → checkpoint every ~20 min on a T4, full run ~3-4h. Each save pushes to the HF Hub repo (`hub_strategy="every_save"`), so a session disconnect doesn't lose progress — re-running cell 6 detects the existing artifacts and resumes from the latest checkpoint.
+
+### Training on Kaggle (free T4 / P100 / L4)
+
+`notebooks/train_kaggle.ipynb` mirrors the Colab notebook with Kaggle-specific bits (UserSecretsClient, `/kaggle/working`):
+
+1. Settings → Accelerator → `GPU T4 x1`, Internet → On, Persistence → Variables and Files
+2. Add-ons → Secrets → add `GITHUB_TOKEN` and `HF_TOKEN`, attach both to the notebook
+3. Edit `HUB_MODEL_ID` in cell 1
+4. Run All (or *Save Version → Save & Run All (Commit)* for headless)
+
+The same Hub repo accepts pushes from Colab, Kaggle, and DGX, so you can hop between machines without losing progress.
+
 ### DGX Training
 ```bash
 # Option 1: Docker on DGX
@@ -106,14 +128,11 @@ uvicorn server.app:app --host 0.0.0.0 --port 7860 &
 # Run training
 python -m training.train --max-steps 4000 --output-dir ./lora_v1
 
-# Option 3: Direct download + run (fastest)
-ssh dgx
-cd /raid/your_workspace
-git clone https://github.com/SirjanSingh/zombiee.git
-cd zombiee
-pip install -e ".[train]"
-nohup uvicorn server.app:app --port 7860 &
-python -m training.train --env-url http://localhost:7860 --max-steps 4000
+# Resume from a Hub checkpoint pushed by Colab/Kaggle:
+python -m training.train \
+  --resume-from-checkpoint <user>/<repo> \
+  --push-to-hub --hub-model-id <user>/<repo> \
+  --max-steps 4000 --output-dir ./lora_v1
 ```
 
 ### Random Baseline Test
@@ -126,7 +145,8 @@ python -m training.inference --random --episodes 50
 
 - **HuggingFace Space:** _TBD_
 - **Demo video:** _TBD_
-- **Colab notebook:** `training/notebook.ipynb`
+- **Colab notebook:** [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb)
+- **Kaggle notebook:** [`notebooks/train_kaggle.ipynb`](notebooks/train_kaggle.ipynb)
 
 ## Architecture
 
