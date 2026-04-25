@@ -259,35 +259,70 @@ def build_scenario_dataset(num_scenarios: int = 200, seed: int = 42):
     return Dataset.from_list(prompts)
 
 
-def create_reward_fn():
-    """GRPO reward function using LOCAL v2 env instances.
+# Marker used by the kaggle notebook to detect whether the file already has
+# the v2-reward-fix applied; do not remove.
+REWARD_FN_VERSION = "v2-cumulative-2026-04-26"
 
-    Each completion gets its own SurviveCityV2Env reset to the SAME seed
-    embedded in the prompt. Model emits action for agent 0 step 0; the
-    remaining ~99 steps of the episode are rolled out with random actions
-    so the terminal reward captures downstream effects of the model's choice.
+
+def create_reward_fn():
+    """GRPO reward function — v2-cumulative.
+
+    Why the previous "return obs.reward" was broken: SurviveCity v2 is hard,
+    and after one model action + ~99 random rollout steps almost every
+    episode ends in death. obs.reward is the LAST step's clipped value, and
+    the terminal death-penalty clips to the 0.01 floor for every completion
+    in the GRPO group. reward_std=0 -> no gradient -> training silently
+    no-ops (loss=0, kl=0 every step — that is exactly what TB showed for
+    steps 1-4 of run aea94d692002).
+
+    What this version does:
+      1. Use AGENT 0's CUMULATIVE RAW REWARD across the rollout
+         (`obs.metadata.cumulative_rewards[0]`), not just the last step.
+         Spans ~ -2.0 to +2.0 on a real run instead of floor-clipping at 0.01.
+      2. Amplify the model's first-action contribution by 5x — the model
+         only acts once, so without amplification the 99-step rollout's
+         random noise drowns it out.
+      3. Add a format bonus (+0.10) when parse_action returned a real action.
+         Guarantees non-zero variance even when env reward is identical
+         across the group (which can still happen on some seeds).
+      4. Do NOT clip in the reward function. OpenEnv only constrains the
+         env's per-step `obs.reward`; the GRPO reward function is internal
+         and TRL normalises within the group anyway. Clipping here was the
+         original bug.
+      5. Cap rollout at 30 steps (was 600). Shorter rollout -> model action
+         has more leverage in the cumulative -> stronger gradient.
+      6. Per-call diagnostic line: parse-success rate, action-type histogram,
+         reward mean/std (clipped + raw). This is what makes "is the model
+         learning?" actually visible in the log.
     """
+    from collections import Counter
+    import statistics
     from survivecity_v2_env.env import SurviveCityV2Env
     from training.inference import (
-        parse_action, random_action, RANDOM_NON_VOTE_ACTIONS,
+        parse_action, RANDOM_NON_VOTE_ACTIONS,
     )
     try:
         from tqdm.auto import tqdm
     except ImportError:
         tqdm = lambda x, **kw: x  # noqa: E731
 
-    # Track call count + error stats so we can spot a silently-degrading reward
-    # function (e.g. env throwing on every call → all rewards = 0.01).
     state = {"calls": 0, "errors": 0}
+    ROLLOUT_LIMIT = 30
+    FORMAT_BONUS = 0.10
+    STEP1_WEIGHT = 5.0  # amplify the 1 model action's contribution
 
     def reward_fn(prompts, completions, **kwargs):
         state["calls"] += 1
         rewards: list[float] = []
+        action_types: list[str] = []
+        rollout_lens: list[int] = []
+        parse_ok_count = 0
+
         n = len(prompts)
         iterator = tqdm(
             list(zip(prompts, completions)),
             total=n,
-            desc=f"reward_fn rollouts (call #{state['calls']})",
+            desc=f"reward_fn #{state['calls']}",
             leave=False,
         )
         for prompt, completion in iterator:
@@ -299,17 +334,24 @@ def create_reward_fn():
                 env = SurviveCityV2Env()
                 obs = env.reset(seed=ep_seed)
 
-                action = parse_action(completion, agent_id=0)
-                if action is None:
-                    rewards.append(0.01)
-                    continue
+                parsed = parse_action(completion, agent_id=0)
+                parse_ok = parsed is not None
+                if parse_ok:
+                    parse_ok_count += 1
+                    action = parsed
+                    action_types.append(parsed.get("action_type", "?"))
+                else:
+                    action = {"agent_id": 0, "action_type": "wait"}
+                    action_types.append("PARSE_FAIL")
 
+                # Apply the model's action and capture its immediate reward
                 obs = env.step(action)
+                step1_raw = obs.get("metadata", {}).get("raw_reward", 0.0)
 
-                # Roll out the remainder of the episode with random actions
+                # Short random rollout for context (capped)
                 rollout_rng = random.Random(ep_seed + 7)
                 steps = 0
-                while not obs.get("done", False) and steps < 600:
+                while not obs.get("done", False) and steps < ROLLOUT_LIMIT:
                     aid = obs.get("metadata", {}).get("current_agent_id", 0)
                     sc = obs.get("step_count", 0)
                     if sc in (30, 60, 90):
@@ -325,22 +367,47 @@ def create_reward_fn():
                         }
                     obs = env.step(rand_act)
                     steps += 1
-                rewards.append(obs.get("reward", 0.01))
+
+                # Cumulative raw reward for agent 0 across the whole rollout
+                cum0 = obs.get("metadata", {}).get(
+                    "cumulative_rewards", {}
+                ).get(0, 0.0)
+
+                # Final composite — signed, NOT clipped (GRPO normalises internally)
+                composite = (
+                    STEP1_WEIGHT * step1_raw
+                    + cum0
+                    + (FORMAT_BONUS if parse_ok else 0.0)
+                )
+                rewards.append(float(composite))
+                rollout_lens.append(steps)
             except Exception as e:
-                # Was logger.debug — invisible at INFO level. Bumped to warning
-                # so a degraded env actually shows up in the log instead of
-                # silently producing all-0.01 rewards.
                 state["errors"] += 1
                 if state["errors"] <= 5 or state["errors"] % 50 == 0:
                     logger.warning(
                         f"reward_fn error #{state['errors']} "
                         f"({type(e).__name__}): {e}"
                     )
-                rewards.append(0.01)
-        nonzero = sum(1 for r in rewards if r != 0.01)
+                rewards.append(0.0)
+                action_types.append("ERROR")
+                rollout_lens.append(0)
+
+        # Diagnostics — this is the line you tail in the log to see learning
+        try:
+            r_mean = statistics.mean(rewards)
+            r_std = statistics.stdev(rewards) if len(rewards) > 1 else 0.0
+            ro_mean = statistics.mean(rollout_lens) if rollout_lens else 0.0
+        except statistics.StatisticsError:
+            r_mean = r_std = ro_mean = 0.0
+        action_dist = Counter(action_types).most_common(6)
+        action_dist_str = ", ".join(f"{a}={c}" for a, c in action_dist)
         logger.info(
-            f"reward_fn call #{state['calls']}: {n} completions, "
-            f"{nonzero} non-default rewards, total errors so far={state['errors']}"
+            f"reward_fn #{state['calls']}: n={n} "
+            f"parse_ok={parse_ok_count}/{n} "
+            f"r[mean={r_mean:+.3f} std={r_std:.3f} min={min(rewards):+.3f} max={max(rewards):+.3f}] "
+            f"avg_rollout={ro_mean:.0f} "
+            f"actions[{action_dist_str}] "
+            f"errs={state['errors']}"
         )
         return rewards
 
