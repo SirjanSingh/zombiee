@@ -119,10 +119,11 @@ EXPOSE 7861
 # server / simulator launches. The training script uses the local v2
 # SurviveCityV2Env in its GRPO reward function — no in-container HTTP needed.
 #
-# DGX defaults (30 GB VRAM Ampere/Hopper) — saturate the GPU for GRPO:
-#   --max-steps 100                    100 steps total
-#   --save-steps 10                    checkpoint every 10 steps (10 saves total)
-#   --save-total-limit 10              keep all 10 on disk + Hub
+# DGX defaults (30 GB VRAM Ampere/Hopper) — saturate the GPU for GRPO,
+# fit in a 12-hour session, save every step:
+#   --max-steps 15                     15 steps total (~6h on A100, ~12h on V100)
+#   --save-steps 1                     checkpoint after every single step (15 saves)
+#   --save-total-limit 15              keep all 15 on disk + Hub (~450 MB)
 #   --num-generations 12               bigger group → stronger GRPO gradient
 #   --grad-accum-steps 4               48 generations evaluated per gradient update
 #   --max-completion-length 512        more tokens per response
@@ -134,14 +135,14 @@ EXPOSE 7861
 #   docker run ... survivecity-v2-dgx <override-args>
 # and set HUGGINGFACE_TOKEN with `-e HUGGINGFACE_TOKEN=...`.
 CMD ["bash", "-c", "\
-echo '=== SurviveCity v2 DGX training ===' && \
+echo '=== SurviveCity v2 DGX training (15 steps, save every step) ===' && \
 echo \"GPU info:\" && \
 nvidia-smi -L || true && \
 python -m training.train \
     --model-name Qwen/Qwen2.5-3B-Instruct \
-    --max-steps 100 \
-    --save-steps 10 \
-    --save-total-limit 10 \
+    --max-steps 15 \
+    --save-steps 1 \
+    --save-total-limit 15 \
     --output-dir /app/checkpoints \
     --num-generations 12 \
     --grad-accum-steps 4 \

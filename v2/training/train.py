@@ -1,16 +1,22 @@
 """GRPO training pipeline for SurviveCity v2 — DGX-tuned (30 GB VRAM).
 
-Defaults reflect "saturate a 30GB Ampere/Hopper DGX with GRPO":
+Defaults reflect "fit within a 12-hour DGX session, save every step":
     --model-name              Qwen/Qwen2.5-3B-Instruct
-    --max-steps               100        (10 saves @ save_steps=10)
-    --save-steps              10
-    --save-total-limit        10         (keep all 10 on disk + Hub)
+    --max-steps               15         (matches v1's save-every-step cadence
+                                          but with a higher step ceiling)
+    --save-steps              1          (every step → 15 checkpoints total)
+    --save-total-limit        15         (keep all 15 on disk + Hub)
     --num-generations         12         (bigger group → stronger GRPO gradient)
     --gradient-accum-steps    4          (4 prompts/step × 12 gens = 48 evals/step)
     --max-completion-length   512        (longer responses, more tokens to learn from)
     --lora-r                  32
     --lora-alpha              64
     --max-seq-length          4096
+
+Time budget: at ~24 min/step on A100, 15 steps ≈ 6 h of training plus Hub
+push overhead and warmup; comfortably fits in a 12-hour DGX session. On V100
+(no native bf16) expect ~50 min/step → 12.5 h total — right at the limit, so
+prefer A100/H100 if you have the choice.
 
 Memory strategy: bf16 base model + gradient checkpointing enabled on the
 non-4bit path. Lets num_generations=12 fit alongside max_completion_length=512
@@ -46,8 +52,8 @@ logger = logging.getLogger("survivecity_v2.train")
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model-name", default="Qwen/Qwen2.5-3B-Instruct")
-    p.add_argument("--max-steps", type=int, default=100)
-    p.add_argument("--save-steps", type=int, default=10)
+    p.add_argument("--max-steps", type=int, default=15)
+    p.add_argument("--save-steps", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--num-generations", type=int, default=12)
     p.add_argument("--output-dir", default="./checkpoints")
@@ -73,9 +79,10 @@ def parse_args():
         help="Push every checkpoint to --hub-model-id (requires HUGGINGFACE_TOKEN).")
     p.add_argument("--hub-model-id", default=None)
     p.add_argument("--hub-private", action="store_true")
-    p.add_argument("--save-total-limit", type=int, default=10,
+    p.add_argument("--save-total-limit", type=int, default=15,
                    help="Keep at most this many checkpoints on disk locally. "
-                        "Default 10 keeps every save from a 100-step / save_steps=10 run.")
+                        "Default 15 keeps every save from a 15-step / save_steps=1 run "
+                        "(~30 MB adapter × 15 ≈ 450 MB on Hub).")
     p.add_argument("--gradient-checkpointing", action="store_true", default=True,
                    help="Enable gradient checkpointing to fit larger num_generations × "
                         "max_completion_length within VRAM. Trades ~30%% per-step time for ~40%% "
@@ -351,7 +358,8 @@ def main():
         learning_rate=args.lr,
         max_steps=args.max_steps,
         save_steps=args.save_steps,
-        logging_steps=5,
+        # Log every step — with only 15 total, we want every datapoint in TB.
+        logging_steps=1,
         save_total_limit=args.save_total_limit,
         max_prompt_length=args.max_prompt_length,
         max_completion_length=args.max_completion_length,

@@ -132,10 +132,10 @@ periodic rewards table — a feature v1 didn't have).
 | Max prompt length | 512 (T4) | **1536** | v2 prompt is ~1.5× longer with new mechanics |
 | Max completion length | 256 | **512** | Doubled — gives the model room for verbose JSON across all 6 v2 fields |
 | Max seq length | 4096 | 4096 | Same |
-| Max steps | 12 (Colab cap) | **100** | DGX wallclock budget; gives 10 checkpoints |
-| Save steps | 1 | **10** | 10 evenly-spaced saves; v1 saved every step due to Colab disconnects |
-| save_total_limit | 3 | **10** | Keep all 10 v2 checkpoints (Hub repo stays ~800 MB) |
-| Wallclock target | ~3 h 53 min (12 steps) | TBD on DGX (est. ~24-32 h on A100) | More compute per step but bigger group |
+| Max steps | 12 (Colab cap) | **15** | 12-hour DGX session budget; ~24 min/step on A100 → ~6h compute |
+| Save steps | 1 | **1** | Same as v1 — every step gets a checkpoint (15 total) |
+| save_total_limit | 3 | **15** | Keep all 15 v2 checkpoints (Hub repo stays ~450 MB) |
+| Wallclock target | ~3 h 53 min (12 steps on T4) | ~6 h on A100 / ~12 h on V100 / ~2 h on H100 | More compute per step but bigger group |
 | Hub strategy | every_save | every_save | Cross-machine resume |
 
 ---
