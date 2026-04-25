@@ -71,15 +71,24 @@ RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
     "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
 
-# `mergekit` is an OPTIONAL TRL dependency on paper, but TRL 0.15+ imports it
-# unconditionally from `trl/trainer/callbacks.py:40` via `mergekit_utils.py`.
-# Without this, `from trl import GRPOTrainer` raises:
-#     ModuleNotFoundError: No module named 'mergekit'
-# even though we don't use any merge functionality. Install it explicitly so
-# the trl import chain works.
+# TRL 0.15+ has a cascade of "optional" integrations that are imported
+# unconditionally in the GRPOTrainer load path. Each one takes a moment to
+# discover via the smoke test (lines further down). Known list as of
+# 2026-04-25 — install all of them so `from trl import GRPOTrainer` works:
+#
+#   trl/trainer/grpo_trainer.py
+#       -> callbacks.py
+#           -> mergekit_utils.py     -> import mergekit
+#           -> judges.py             -> import llm_blender
+#
+# We don't actually use merge OR judge functionality; these are dead-weight
+# imports for our code path. But TRL doesn't gate them, so we have to ship
+# them. (Alternative: pin trl to <=0.13.x, but that risks breaking the
+# Unsloth-installed transformers/peft compat. Easier to just install.)
 RUN pip install --no-cache-dir \
     --trusted-host pypi.org --trusted-host files.pythonhosted.org \
-    "mergekit"
+    "mergekit" \
+    "llm-blender"
 
 # torchao gymnastics, take 2:
 #
@@ -120,6 +129,7 @@ from peft import get_peft_model, LoraConfig, prepare_model_for_kbit_training, Pe
 from trl import GRPOTrainer, GRPOConfig; \
 ta = importlib.util.find_spec('torchao'); \
 mk = importlib.util.find_spec('mergekit'); \
+lb = importlib.util.find_spec('llm_blender'); \
 print('torch       ', torch.__version__); \
 print('transformers', transformers.__version__); \
 print('peft        ', peft.__version__); \
@@ -129,8 +139,10 @@ import trl; print('trl         ', trl.__version__); \
 print('bitsandbytes', bitsandbytes.__version__); \
 print('torchao     ', 'absent (intended)' if ta is None else 'PRESENT (unexpected)'); \
 print('mergekit    ', 'present' if mk is not None else 'ABSENT (would break trl)'); \
+print('llm_blender ', 'present' if lb is not None else 'ABSENT (would break trl judges)'); \
 assert ta is None, 'torchao should be uninstalled at build time'; \
 assert mk is not None, 'mergekit must be installed for trl GRPO imports'; \
+assert lb is not None, 'llm_blender must be installed for trl GRPO imports (judges chain)'; \
 print('FULL TRAINING IMPORT CHAIN OK')"
 
 # Logging / plotting / hub

@@ -51,11 +51,14 @@ train = [
     # We train in bf16 (no torchao quant), so the right answer is to leave
     # torchao uninstalled entirely.
     #
-    # `mergekit` IS required because TRL 0.15+ imports it unconditionally
-    # via trl/trainer/callbacks.py -> trl/mergekit_utils.py, even though we
-    # don't use any merge functionality. Without it, `from trl import
-    # GRPOTrainer` raises ModuleNotFoundError.
+    # `mergekit` and `llm-blender` are both required because TRL 0.15+
+    # imports them unconditionally via trl/trainer/callbacks.py:
+    #   - mergekit_utils.py imports mergekit
+    #   - judges.py imports llm_blender
+    # We don't use merge OR judge functionality, but without these,
+    # `from trl import GRPOTrainer` raises ModuleNotFoundError.
     "mergekit",
+    "llm-blender",
     "matplotlib>=3.8",
     "numpy>=1.24",
     "huggingface_hub>=0.20",
