@@ -25,6 +25,26 @@ import type { Broadcast, EpisodeState, Phase } from "./types";
 
 export const HF_SPACE_URL = "https://noanya-zombiee.hf.space";
 
+// Registry of deployed Hugging Face Space endpoints the frontend can target.
+// The BackendPicker iterates over this; useEpisode passes the chosen URL into
+// RemoteEpisodeRunner via the `endpoint` option. Add new Spaces here.
+export const HF_SPACE_ENDPOINTS = {
+  "zombiee": {
+    label: "zombiee",
+    url: "https://noanya-zombiee.hf.space",
+    desc: "OpenEnv API · v1",
+    logsUrl: "https://huggingface.co/spaces/noanya/zombiee/logs/container",
+  },
+  "zombiee-v1-extended": {
+    label: "zombiee-v1-extended",
+    url: "https://noanya-zombiee-v1-extended.hf.space",
+    desc: "API + browser runner · v1",
+    logsUrl: "https://huggingface.co/spaces/noanya/zombiee-v1-extended/logs/container",
+  },
+} as const;
+
+export type SpaceKey = keyof typeof HF_SPACE_ENDPOINTS;
+
 // Per-tab unique session id so the frontend log can be matched against the
 // Space's request log (we send X-Zombiee-Session as a request header).
 const SESSION_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

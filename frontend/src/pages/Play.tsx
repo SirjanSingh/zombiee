@@ -4,33 +4,51 @@ import { AgentRoster, BroadcastFeed, PhaseBar, PostmortemFeed } from "../compone
 import { Icon } from "../components/Icon";
 import { LogsPanel } from "../components/LogsPanel";
 import { useEpisode, type EpisodeMode } from "../hooks/useEpisode";
-import { HF_SPACE_URL, checkSpaceHealth } from "../sim/remoteEngine";
+import { HF_SPACE_ENDPOINTS, checkSpaceHealth, type SpaceKey } from "../sim/remoteEngine";
+
+// "local" + every key in HF_SPACE_ENDPOINTS = the picker buttons.
+type BackendKey = "local" | SpaceKey;
+
+function modeFromKey(k: BackendKey): EpisodeMode {
+  return k === "local" ? "local" : "remote";
+}
 
 export default function Play() {
-  const [backend, setBackend] = useState<EpisodeMode>("local");
-  const ep = useEpisode({ seed: 42, speed: 4, autoStart: true, loopOnEnd: false, mode: backend });
+  const [backend, setBackend] = useState<BackendKey>("local");
+  const mode = modeFromKey(backend);
+  const spaceKey: SpaceKey | undefined = backend === "local" ? undefined : backend;
+  const ep = useEpisode({
+    seed: 42, speed: 4, autoStart: true, loopOnEnd: false,
+    mode,
+    spaceKey,
+  });
   const [fog, setFog] = useState(true);
   const [speed, setSpeed] = useState(4);
   const [seedInput, setSeedInput] = useState("42");
-  const [spaceHealth, setSpaceHealth] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null);
 
-  // Probe the HF Space once on mount + every 30s while remote is selected.
+  // Per-Space health probe. Re-runs when the user picks a different Space.
+  const [spaceHealth, setSpaceHealth] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null);
   useEffect(() => {
+    if (!spaceKey) { setSpaceHealth(null); return; }
     let cancelled = false;
+    const url = HF_SPACE_ENDPOINTS[spaceKey].url;
     const ping = async () => {
-      const r = await checkSpaceHealth();
+      const r = await checkSpaceHealth(url);
       if (!cancelled) setSpaceHealth(r);
     };
     void ping();
     const id = setInterval(ping, 30_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [spaceKey]);
 
   const handleSpeed = (s: number) => { setSpeed(s); ep.setSpeed(s); };
   const handleReset = () => {
     const n = Number(seedInput);
     ep.reset(Number.isFinite(n) ? n : Math.floor(Math.random() * 1e9));
   };
+
+  const isRemote = mode === "remote";
+  const activeSpace = spaceKey ? HF_SPACE_ENDPOINTS[spaceKey] : undefined;
 
   return (
     <div className="max-w-7xl mx-auto px-5 lg:px-8 py-10">
@@ -39,7 +57,7 @@ export default function Play() {
           <div className="mono-label">/play · interactive episode</div>
           <h1 className="mt-1 text-3xl font-display tracking-tight">Run the environment</h1>
           <p className="text-ink-2 mt-1 text-sm max-w-xl">
-            {backend === "remote" ? (
+            {isRemote ? (
               <>
                 Driving the deployed Hugging Face Space. Every action is a real{" "}
                 <code className="font-mono text-[12px] bg-bg-0/60 px-1.5 py-0.5 rounded">POST /step</code>{" "}
@@ -56,13 +74,13 @@ export default function Play() {
         </div>
         <BackendPicker backend={backend} onChange={setBackend} health={spaceHealth} />
       </div>
-      {ep.error && backend === "remote" && (
+      {ep.error && isRemote && (
         <div className="panel p-3 mb-4 border border-neon-rose/40 text-xs font-mono text-neon-rose">
           remote error: {ep.error} — switch back to "Browser engine" to keep playing.
         </div>
       )}
-      {backend === "remote" && !ep.error && (
-        <VerifyCallout />
+      {isRemote && !ep.error && activeSpace && (
+        <VerifyCallout space={activeSpace} />
       )}
 
       <div className="grid lg:grid-cols-[auto_1fr] gap-6 items-start">
@@ -104,7 +122,7 @@ export default function Play() {
       </div>
 
       <div className="mt-6">
-        <LogsPanel active={backend === "remote"} />
+        <LogsPanel active={isRemote} />
       </div>
 
       <EndCard state={ep.state} onReset={handleReset} />
@@ -167,39 +185,46 @@ function Controls({
 function BackendPicker({
   backend, onChange, health,
 }: {
-  backend: EpisodeMode;
-  onChange: (b: EpisodeMode) => void;
+  backend: BackendKey;
+  onChange: (b: BackendKey) => void;
   health: { ok: boolean; latencyMs?: number; error?: string } | null;
 }) {
-  const opts: {
-    key: EpisodeMode; label: string; desc: string; icon: typeof Icon.Cpu;
-  }[] = [
+  type Opt = { key: BackendKey; label: string; desc: string; icon: typeof Icon.Cpu; remote: boolean };
+  const opts: Opt[] = [
     {
-      key: "local", icon: Icon.Cpu,
+      key: "local", icon: Icon.Cpu, remote: false,
       label: "Browser engine",
       desc: "TS port of the env · runs offline · 0 GPU",
     },
-    {
-      key: "remote", icon: Icon.HuggingFace,
-      label: "Hugging Face Space",
-      desc: `${HF_SPACE_URL} · OpenEnv-compliant FastAPI`,
-    },
+    ...(Object.entries(HF_SPACE_ENDPOINTS) as [SpaceKey, typeof HF_SPACE_ENDPOINTS[SpaceKey]][]).map(
+      ([key, v]): Opt => ({
+        key, icon: Icon.HuggingFace, remote: true,
+        label: v.label,
+        desc: `${v.desc} · ${v.url}`,
+      }),
+    ),
   ];
-  const dot = health == null
+  const isRemote = backend !== "local";
+  const dot = !isRemote
     ? "bg-ink-3"
-    : health.ok ? "bg-neon-lime animate-pulse" : "bg-neon-rose";
-  const statusText = health == null
-    ? "probing…"
-    : health.ok
-      ? `space online · ${health.latencyMs ?? "?"}ms`
-      : `space offline${health.error ? ` (${health.error})` : ""}`;
+    : health == null
+      ? "bg-ink-3"
+      : health.ok ? "bg-neon-lime animate-pulse" : "bg-neon-rose";
+  const statusText = !isRemote
+    ? "browser engine"
+    : health == null
+      ? "probing…"
+      : health.ok
+        ? `space online · ${health.latencyMs ?? "?"}ms`
+        : `space offline${health.error ? ` (${health.error})` : ""}`;
   return (
     <div className="panel p-3 flex flex-wrap items-center gap-2">
       <Icon.Network size={14} className="text-neon-purple shrink-0" />
       <span className="mono-label text-[10px] mr-1">backend</span>
       {opts.map((o) => {
         const IconC = o.icon;
-        const disabled = o.key === "remote" && health != null && !health.ok;
+        // Disable a remote button only if it's the currently-probed space and it's offline.
+        const disabled = o.remote && backend === o.key && health != null && !health.ok;
         return (
           <button
             key={o.key}
@@ -256,7 +281,7 @@ function ApiPreview({ state }: { state: any }) {
 
 // Compact judge-friendly callout that appears when remote mode is active.
 // Tells the viewer where to look to verify the demo is real.
-function VerifyCallout() {
+function VerifyCallout({ space }: { space: typeof HF_SPACE_ENDPOINTS[SpaceKey] }) {
   return (
     <div className="panel p-3 mb-4 border border-neon-violet/30 bg-neon-violet/5">
       <div className="flex flex-wrap items-center gap-3 text-[12px]">
@@ -264,14 +289,14 @@ function VerifyCallout() {
         <span className="text-ink-1">
           <span className="font-semibold">Live remote mode.</span>{" "}
           Every action below is a real <code className="font-mono text-[11px] bg-bg-0/60 px-1.5 py-0.5 rounded">POST /step</code> against{" "}
-          <a href={HF_SPACE_URL} target="_blank" rel="noopener noreferrer"
+          <a href={space.url} target="_blank" rel="noopener noreferrer"
              className="font-mono text-neon-violet hover:underline">
-            noanya/zombiee
+            {space.label}
           </a>.
         </span>
         <span className="ml-auto text-ink-3 text-[11px] font-mono">
           Scroll down to compare the network log against the Space's <a
-            href="https://huggingface.co/spaces/noanya/zombiee/logs/container"
+            href={space.logsUrl}
             target="_blank" rel="noopener noreferrer"
             className="underline hover:text-ink-1"
           >container logs ↗</a>
