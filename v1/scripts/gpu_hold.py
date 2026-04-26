@@ -5,8 +5,8 @@ Allocates a contiguous tensor (default ~30 GB on a 32 GB V100) and idles in a
 loop, touching the buffer once a minute so the process stays listed in
 `nvidia-smi` and the GPU doesn't drop to idle clocks.
 
-Use only when you actively plan to come back to this GPU (e.g. v2 training is
-queued behind a checkpoint pull). On a shared cluster, do NOT hold more than
+Use only when you actively plan to come back to this GPU (e.g. a follow-up
+training run is queued behind a checkpoint pull). On a shared cluster, do NOT hold more than
 one GPU at a time, and release it (Ctrl-C / kill) the moment you're done.
 
 Two sizing modes:

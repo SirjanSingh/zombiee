@@ -448,8 +448,8 @@ given the right information structure.
   \item \textbf{Behavioural-cue leakage.} \texttt{infection.py} emits explicit
         text cues (\textit{``A1 is unusually hungry''}) into observations. A
         trained agent can string-match these rather than reason about hunger
-        trajectories. v2 replaces literal cues with noisy, false-positive-prone
-        hints.
+        trajectories. A natural follow-up is to replace literal cues with
+        noisy, false-positive-prone hints (see Future Work).
   \item \textbf{Sample size.} $n_t{=}10$ gives a 95\% binomial CI for the
         survival rate of $\approx[0.25\%,\ 44.5\%]$ around $1/10$. The reward
         and episode-length deltas are large relative to within-class
@@ -466,13 +466,34 @@ given the right information structure.
 \section{Future Work}
 \label{sec:future}
 
-We are designing a v2 with five upgrades that are strictly action-space-additive
-(so the v1 LoRA can be evaluated zero-shot on v2 to measure transfer):
-five agents with two infected (one biter, one saboteur), iterated voting at
-$t\in\{30,60,90\}$, a broadcast-noise economy that attracts zombies, a stamina
-resource on water cells, and a day/night cycle. The transfer experiment
---- v1-LoRA on v2 vs.\ v2-from-scratch vs.\ v2-warm-started --- is the proposed
-science contribution. Detailed design in the team's internal v2 design doc.
+The architecture is deliberately additive-friendly: the OpenEnv contract,
+post-mortem mechanism, and LoRA pipeline all generalise to a richer follow-up
+with no breaking changes to the action space or reward interface. Concrete
+directions we plan to explore:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Larger team, multiple hidden roles.} Five agents with two
+        starting infected (e.g.\ a biter that spreads infection on contact
+        and a saboteur that depletes shared resources) increases the
+        social-deduction signal-to-noise ratio.
+  \item \textbf{Iterated voting.} Vote phases at $t\in\{30,60,90\}$ instead
+        of a single $t{=}50$ vote let the policy correct an early wrong vote.
+  \item \textbf{Resource scarcity \& inventory.} Distinct food / water /
+        medicine resources with a 3-slot inventory force inter-agent
+        coordination beyond pure broadcast.
+  \item \textbf{Day/night and zombie waves.} A visibility cycle plus
+        scheduled wave spawns at $t\in\{25,50,75\}$ stretches the
+        long-horizon survival signal further.
+  \item \textbf{Noisy behavioural cues.} Replace the literal-string cue
+        leakage flagged in §\ref{sec:limitations} with false-positive-prone
+        hints, forcing the policy to reason over trajectories rather than
+        match strings.
+  \item \textbf{Zero-shot transfer experiment.} Because the upgrades are
+        action-space-additive, the v1 LoRA can be evaluated unmodified on
+        the richer environment. The proposed comparison is
+        \emph{v1-LoRA-zero-shot} vs.\ \emph{from-scratch} vs.\
+        \emph{warm-started}; the latter two require additional GRPO time.
+\end{itemize}
 
 % ============================================================================
 %  8. CONCLUSION
@@ -489,9 +510,10 @@ step-12 evaluation gives \textbf{100\% action-grammar compliance},
 \textbf{$2.0\!\times$ baseline episode length} ($37.6$ vs.\ $19.1$ steps),
 and survival rate $0\%\rightarrow 10\%$, with one $n_t{=}10$ episode reaching
 full 100-step survival (reward $1.97$). The largest remaining bottleneck is
-the simplified reward hook (one model action then random rollout); v2
-addresses this via multi-step model rollouts and an additive action-space
-upgrade that lets the v1 LoRA be evaluated zero-shot for transfer measurement.
+the simplified reward hook (one model action then random rollout); the
+follow-up directions in §\ref{sec:future} address this with multi-step model
+rollouts and an action-space-additive richer environment that lets the v1
+LoRA be evaluated zero-shot for transfer measurement.
 
 % ============================================================================
 %  LINKS

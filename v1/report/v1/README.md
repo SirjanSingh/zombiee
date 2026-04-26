@@ -111,7 +111,7 @@ If they're flat, the existing wording lands without overclaiming.
 6. Discussion
    6.1 What Worked
    6.2 Limitations
-7. Future Work                   ← v2 teaser
+7. Future Work                   ← roadmap
 8. Conclusion
 ```
 
