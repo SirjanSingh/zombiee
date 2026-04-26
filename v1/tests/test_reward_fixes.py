@@ -75,3 +75,22 @@ def test_vote_reward_infected_voter_self_pays_minus_30():
     state.votes_cast = {0: 0}  # infected voted for self
 
     assert vote_reward(state, 0) == pytest.approx(-0.30)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: pending_damage_reward carries across rounds
+# ---------------------------------------------------------------------------
+
+def test_pending_damage_carries_across_apply_action():
+    """reset_step_flags MUST NOT clear pending_damage_reward."""
+    state = create_episode(seed=42)
+    a0 = state.agents[0]
+
+    # Simulate damage taken at end of prior round
+    a0.pending_damage_reward = -0.10
+
+    # Agent acts: apply_agent_action calls reset_step_flags internally
+    apply_agent_action(state, 0, "wait")
+
+    # The accumulator MUST persist (only env-side drainage clears it, in Task 4)
+    assert a0.pending_damage_reward == pytest.approx(-0.10)

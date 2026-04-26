@@ -41,6 +41,20 @@ class _AgentInternal:
     damage_this_step: int = 0
     died_this_step: bool = False
 
+    # Carries damage cost across rounds; drained inside compose_reward (Task 4).
+    # NOT reset by reset_step_flags — only compose_reward clears it.
+    pending_damage_reward: float = 0.0
+
+    # Forage-shaping snapshots: Manhattan distance to nearest food before/after
+    # this step's action. Overwritten each step by apply_agent_action; -1
+    # means "no snapshot taken yet" (initial episode state).
+    prev_food_dist_this_step: int = -1
+    cur_food_dist_this_step: int = -1
+
+    # Last action this agent took this step — used by survival_reward for
+    # the wait penalty.
+    last_action_this_step: str = ""
+
     # Accumulated stats
     food_eaten: int = 0
     death_step: Optional[int] = None
@@ -50,6 +64,9 @@ class _AgentInternal:
         self.ate_this_step = False
         self.damage_this_step = 0
         self.died_this_step = False
+        self.last_action_this_step = ""
+        # NOTE: pending_damage_reward NOT reset here — compose_reward drains it.
+        # NOTE: prev/cur_food_dist_this_step overwritten by next apply_agent_action snapshots.
 
 
 @dataclass

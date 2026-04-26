@@ -87,7 +87,7 @@
 \label{sec:intro}
 
 Most LLM-agent benchmarks test single-agent goal completion in static environments
-\cite{TODO_REF_AGENTBENCH}. Two phenomena central to multi-agent reasoning are not directly
+\cite{agentbench2023}. Two phenomena central to multi-agent reasoning are not directly
 probed: \textbf{cross-episode learning from failure} and \textbf{hidden-role theory of mind}.
 SurviveCity targets both.
 
@@ -242,9 +242,9 @@ value is exposed to the OpenEnv contract.
 \label{sec:method}
 
 \subsection{Architecture}
-\textbf{Qwen2.5-3B-Instruct} \cite{TODO_REF_QWEN} fine-tuned with LoRA
-\cite{TODO_REF_LORA} on attention projections ($q,k,v,o$); $r{=}16$, $\alpha{=}32$,
-dropout $0$, no bias. Training: GRPO \cite{TODO_REF_DEEPSEEKR1} from HuggingFace
+\textbf{Qwen2.5-3B-Instruct} \cite{qwen2024} fine-tuned with LoRA
+\cite{hu2022lora} on attention projections ($q,k,v,o$); $r{=}16$, $\alpha{=}32$,
+dropout $0$, no bias. Training: GRPO \cite{deepseekr1} from HuggingFace
 TRL, $g{=}4$, KL $0.04$, temperature $0.9$, lr $1\!\times\!10^{-5}$ with cosine
 decay to zero.
 
