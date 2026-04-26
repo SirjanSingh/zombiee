@@ -439,12 +439,33 @@ given the right information structure.
 
 \subsection{Limitations}
 \label{sec:limitations}
+
+The biggest constraint shaping every other limitation below is compute. The
+entire pipeline --- env design, GRPO training, and LLM-driven evaluation ---
+ran on a single free-tier Colab Tesla T4 (15.6\,GB, no native bf16) inside
+the 24-hour hackathon window. The training run itself consumed
+$\approx$3\,h\,53\,min for 12 GRPO steps ($\approx$19\,min/step), and the
+LLM-driven evaluation costs $\approx$3\,min per trained episode. Several
+extensions we would have liked to ship were straightforwardly bottlenecked
+by this budget rather than by design.
+
 \begin{itemize}[leftmargin=*]
+  \item \textbf{Compute budget.} A single T4 with $\approx$19\,min/step on
+        Qwen-3B + LoRA limited training to 12 GRPO steps within the
+        hackathon window. KL drift at step 12 was $<5\!\times\!10^{-3}$ ---
+        i.e.\ the policy had not yet fully converged. A longer run
+        (50--100 steps) would likely have widened the survival-rate gap
+        further, but requires either an A100/H100 (native bf16, $\approx$2$\times$
+        throughput) or a multi-day GPU lease, neither of which was available
+        inside the contest window.
   \item \textbf{Reward-signal weakness.} The reward hook scores only the
         \emph{first} model action; the remaining $\sim$99 steps are uniform
         random. GRPO group reward variance ($\sigma{=}0.014$) is therefore
         dominated by rollout RNG, weakening the policy gradient --- consistent
         with the small KL drift and tiny grad norms observed in training.
+        Multi-step model rollouts would tighten this signal but multiply
+        per-episode compute by 10--20$\times$, which compounds the budget
+        problem above.
   \item \textbf{Behavioural-cue leakage.} \texttt{infection.py} emits explicit
         text cues (\textit{``A1 is unusually hungry''}) into observations. A
         trained agent can string-match these rather than reason about hunger
@@ -454,8 +475,9 @@ given the right information structure.
         survival rate of $\approx[0.25\%,\ 44.5\%]$ around $1/10$. The reward
         and episode-length deltas are large relative to within-class
         $\sigma$, so those comparisons are more robust than the survival
-        headline. Larger $N$ (e.g.\ $50$) was infeasible in the 24-hour
-        hackathon budget at $\sim$3\,min per LLM-driven episode.
+        headline. A larger eval ($n_t{=}50$) at $\approx$3\,min per
+        LLM-driven episode is another 2.5\,h of T4 time on top of the
+        training run --- again a compute, not a design, constraint.
   \item \textbf{Single map.} All evaluation episodes use the same fixed grid;
         generalisation to varied layouts is untested.
 \end{itemize}
@@ -468,8 +490,12 @@ given the right information structure.
 
 The architecture is deliberately additive-friendly: the OpenEnv contract,
 post-mortem mechanism, and LoRA pipeline all generalise to a richer follow-up
-with no breaking changes to the action space or reward interface. Concrete
-directions we plan to explore:
+with no breaking changes to the action space or reward interface. The
+directions below are scoped as future work rather than ablations on the
+current submission because each requires substantially more GRPO compute
+than fit inside the 24-hour hackathon window on a single T4 (see
+§\ref{sec:limitations}); on an A100/H100 with native bf16 we estimate
+each one to be a 1--2 day extension rather than a redesign.
 
 \begin{itemize}[leftmargin=*,nosep]
   \item \textbf{Larger team, multiple hidden roles.} Five agents with two
@@ -488,11 +514,19 @@ directions we plan to explore:
         leakage flagged in §\ref{sec:limitations} with false-positive-prone
         hints, forcing the policy to reason over trajectories rather than
         match strings.
+  \item \textbf{Multi-step model rollouts in the reward hook.} The current
+        hook scores only the model's first action and rolls the rest of the
+        episode out with random actions; a clean fix is to keep the model in
+        the loop for $K$ steps before random rollout. Each
+        $K{=}10$ increment scales reward-fn compute by $\approx$10$\times$
+        (the dominant cost per GRPO step), which is why this is
+        compute-gated rather than implementation-gated.
   \item \textbf{Zero-shot transfer experiment.} Because the upgrades are
         action-space-additive, the v1 LoRA can be evaluated unmodified on
         the richer environment. The proposed comparison is
         \emph{v1-LoRA-zero-shot} vs.\ \emph{from-scratch} vs.\
-        \emph{warm-started}; the latter two require additional GRPO time.
+        \emph{warm-started}; the latter two require additional GRPO time
+        on the richer env.
 \end{itemize}
 
 % ============================================================================
