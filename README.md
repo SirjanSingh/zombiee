@@ -19,6 +19,8 @@ tags:
 </div>
 
 > 🎮 **Try it live:** **[zombiee-tau.vercel.app](https://zombiee-tau.vercel.app)** — interactive web demo, switch between the v1 and extended adapters, watch episodes play out in real time.
+>
+> 📄 **Hackathon report (PDF):** **[HACKATHON_REPORT.pdf](HACKATHON_REPORT.pdf)** — the full writeup with figures, tables, and references.
 
 > **Bonus:** an extended 4000-step Kaggle run gets survival to **12 %** and shows **near-certain (~1.0) detection of the hidden infected agent by t≈80** — see [Extended training](#extended-training-run-4000-steps) below.
 
@@ -217,6 +219,7 @@ python -m training.inference --random --episodes 50
 - **Colab v1 eval notebook:** [`notebooks/eval_colab.ipynb`](notebooks/eval_colab.ipynb)
 - **Kaggle extended training notebook:** [`notebooks/train_v1_kaggle_extend.ipynb`](notebooks/train_v1_kaggle_extend.ipynb)
 - **Kaggle extended eval notebook:** [`notebooks/eval_v1_kaggle_extend.ipynb`](notebooks/eval_v1_kaggle_extend.ipynb)
+- **📄 Hackathon report (compiled PDF):** [`HACKATHON_REPORT.pdf`](HACKATHON_REPORT.pdf)
 - **Report (LaTeX source):** [`report/v1/v1.tex`](report/v1/v1.tex)
 
 ## Architecture
