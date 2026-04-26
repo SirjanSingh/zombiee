@@ -12,11 +12,8 @@ Run with: uvicorn server.app:app --host 0.0.0.0 --port 7860
 from __future__ import annotations
 
 import logging
-import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 
@@ -71,28 +68,6 @@ class StepRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-
-_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-_INDEX_PATH = os.path.join(_STATIC_DIR, "index.html")
-
-
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-def index():
-    """Serve the in-browser episode runner UI."""
-    try:
-        with open(_INDEX_PATH, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return HTMLResponse(
-            "<h1>SurviveCity API</h1><p>Frontend missing. Try /docs for the API.</p>",
-            status_code=200,
-        )
-
-
-# Mount static directory for any future assets (images, etc.)
-if os.path.isdir(_STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
-
 
 @app.get("/health")
 def health():
