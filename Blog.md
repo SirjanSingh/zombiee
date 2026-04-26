@@ -22,7 +22,7 @@ date: April 26, 2026
 
 **An OpenEnv-Compliant Multi-Agent Environment for Cross-Episode Failure-Replay Learning in LLMs**
 
-🎮 [**Live Demo**](https://zombiee-tau.vercel.app) · 🤗 [**Models**](https://huggingface.co/noanya) · 💻 [**Code**](https://github.com/SirjanSingh/zombiee) · 📄 [**Report**](https://github.com/SirjanSingh/zombiee/blob/master/report/v1/v1.tex)
+🎮 [**Live Demo**](https://zombiee-tau.vercel.app) · 🤗 [**Models**](https://huggingface.co/noanya) · 💻 [**Code**](https://github.com/SirjanSingh/zombiee) · 📄 [**Report**](https://github.com/SirjanSingh/zombiee/blob/master/HACKATHON_REPORT.pdf)
 
 *Built for the Meta × PyTorch × Scaler OpenEnv Hackathon · Team PyGuys (Sirjan Singh, Eeshan Singh)*
 
