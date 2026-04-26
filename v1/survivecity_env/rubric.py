@@ -55,11 +55,11 @@ def survival_reward(state: EpisodeState, agent_id: int) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Rubric 2 — VoteRubric (sparse, fires once at step 50)
+# Rubric 2 — VoteRubric (sparse, fires once at step 51 when vote resolves)
 # ---------------------------------------------------------------------------
 
 def vote_reward(state: EpisodeState, agent_id: int) -> float:
-    """Score the agent's vote at step 50.
+    """Score the agent's vote (one-shot, fires the round vote resolves at step 51).
 
     For healthy agents:
       vote_target == true_infected_id → +0.30
