@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SurviveCity — Zombie Survival</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: 'Courier New', monospace;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+header {
+  background: #161b22;
+  padding: 10px 20px;
+  border-bottom: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+header h1 { font-size: 1.1rem; color: #f0883e; letter-spacing: 0.05em; }
+header .sub { font-size: 0.72rem; color: #8b949e; }
+#step-badge {
+  margin-left: auto;
+  background: #21262d;
+  padding: 3px 12px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+#phase-badge {
+  background: #1a3a1a;
+  color: #56d364;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  display: none;
+}
+
+#main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ---- Grid panel ---- */
+#grid-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  flex-shrink: 0;
+  background: #0d1117;
+}
+#grid {
+  display: grid;
+  grid-template-columns: repeat(10, 46px);
+  grid-template-rows: repeat(10, 46px);
+  gap: 2px;
+  border: 2px solid #21262d;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  position: relative;
+  transition: background 0.15s;
+  user-select: none;
+}
+.c-empty { background: #0d1117; }
+.c-food  { background: #132213; }
+.c-safe  { background: #111330; }
+.c-wall  { background: #1a1a1a; color: #3a3a3a; font-size: 1rem; }
+.c-food::after  { content: 'F'; position: absolute; font-size: 0.55rem; color: #3d7a3d; bottom: 2px; right: 3px; }
+.c-safe::after  { content: 'S'; position: absolute; font-size: 0.55rem; color: #3d3d8a; bottom: 2px; right: 3px; }
+
+.agent-m {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.62rem;
+  font-weight: 800;
+  z-index: 2;
+  border: 2px solid rgba(255,255,255,0.25);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}
+.am-0 { background: rgba(220,50,50,0.88); }
+.am-1 { background: rgba(200,140,0,0.88); }
+.am-2 { background: rgba(0,130,210,0.88); }
+.am-dead { opacity: 0.25; }
+.am-cur {
+  box-shadow: 0 0 0 3px #fff;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,100% { box-shadow: 0 0 0 2px rgba(255,255,255,0.9); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,255,255,0.3); }
+}
+.zombie-m {
+  position: absolute;
+  inset: 4px;
+  border-radius: 3px;
+  background: rgba(160,20,20,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  font-weight: 700;
+  z-index: 1;
+  color: #ff9999;
+}
+
+/* ---- Side panel ---- */
+#side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #21262d;
+  overflow: hidden;
+  min-width: 320px;
+  max-width: 400px;
+}
+
+/* Config */
+#cfg {
+  padding: 12px 14px;
+  border-bottom: 1px solid #21262d;
+  background: #161b22;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.row { display: flex; align-items: center; gap: 8px; }
+.row label { font-size: 0.72rem; color: #8b949e; min-width: 52px; }
+input[type="password"], select {
+  flex: 1;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #e6edf3;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.78rem;
+}
+input[type="range"] { flex: 1; accent-color: #58a6ff; }
+#speed-lbl { font-size: 0.72rem; color: #8b949e; min-width: 34px; text-align: right; }
+.btns { display: flex; gap: 6px; }
+button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+#b-run {
+  flex: 1;
+  background: #1a4a1a;
+  border-color: #2ea043;
+  color: #56d364;
+}
+#b-run:hover { background: #1f5a1f; }
+#b-run.stop { background: #4a1a1a; border-color: #dc2626; color: #ff6b6b; }
+#b-step, #b-reset {
+  background: #21262d;
+  color: #e6edf3;
+}
+#b-step:hover, #b-reset:hover { background: #30363d; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Agents */
+#agents {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #21262d;
+}
+.acard {
+  flex: 1;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 0.7rem;
+  transition: border-color 0.15s;
+}
+.acard.cur { border-color: #58a6ff; }
+.acard.dead { opacity: 0.35; }
+.ah {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+.adot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.brow { margin: 2px 0; }
+.blbl { display: flex; justify-content: space-between; color: #8b949e; margin-bottom: 2px; font-size: 0.65rem; }
+.bar { height: 4px; border-radius: 2px; background: #21262d; overflow: hidden; }
+.bf { height: 100%; border-radius: 2px; transition: width 0.25s, background 0.25s; }
+.bfhp { background: #56d364; }
+.bfhg { background: #f0883e; }
+.ast { font-size: 0.62rem; color: #8b949e; margin-top: 4px; min-height: 13px; }
+
+/* Log */
+#log-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 10px 14px 0;
+}
+#log-wrap h3 {
+  font-size: 0.68rem;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+#log {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 0.72rem;
+  line-height: 1.7;
+  padding-bottom: 6px;
+}
+.le { border-bottom: 1px solid #161b22; padding: 1px 0; }
+.li { color: #58a6ff; }
+.la0 { color: #ff7b7b; }
+.la1 { color: #ffc266; }
+.la2 { color: #66bbff; }
+.lr { color: #56d364; font-size: 0.66rem; padding-left: 10px; }
+.le-err { color: #ff6b6b; }
+.ld { color: #f0883e; font-weight: 700; }
+
+/* Status bar */
+#sbar {
+  background: #161b22;
+  border-top: 1px solid #21262d;
+  padding: 5px 14px;
+  font-size: 0.68rem;
+  color: #8b949e;
+  display: flex;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.thinking { color: #f0883e; animation: blink 0.9s step-end infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>&#9763; SurviveCity</h1>
+    <div class="sub">Multi-Agent Zombie Survival &middot; LLM Episode Runner</div>
+  </div>
+  <div id="phase-badge">—</div>
+  <div id="step-badge">Step <span id="step-n">—</span>/100</div>
+</header>
+
+<div id="main">
+  <div id="grid-panel">
+    <div id="grid"></div>
+  </div>
+
+  <div id="side">
+    <div id="cfg">
+      <div class="row">
+        <label>HF Token</label>
+        <input type="password" id="hf-token" placeholder="hf_xxxxxxxxx  (read-only scope is enough)">
+      </div>
+      <div class="row">
+        <label>Model</label>
+        <select id="model">
+          <option value="Qwen/Qwen2.5-3B-Instruct" selected>Qwen 2.5 3B Instruct (fast)</option>
+          <option value="Qwen/Qwen2.5-7B-Instruct">Qwen 2.5 7B Instruct</option>
+          <option value="meta-llama/Llama-3.2-3B-Instruct">Llama 3.2 3B Instruct</option>
+          <option value="mistralai/Mistral-7B-Instruct-v0.3">Mistral 7B Instruct v0.3</option>
+          <option value="microsoft/Phi-3-mini-4k-instruct">Phi-3 Mini 4K</option>
+          <option value="HuggingFaceH4/zephyr-7b-beta">Zephyr 7B Beta</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Speed</label>
+        <input type="range" id="speed" min="300" max="4000" value="1200" step="100">
+        <span id="speed-lbl">1.2s</span>
+      </div>
+      <div class="btns">
+        <button id="b-reset" onclick="doReset()">&#8635; Reset</button>
+        <button id="b-step" onclick="doStep()" disabled>Step &rsaquo;</button>
+        <button id="b-run" onclick="toggleRun()" disabled>&#9654; Run</button>
+      </div>
+    </div>
+
+    <div id="agents">
+      <!-- A0 -->
+      <div class="acard" id="ac0">
+        <div class="ah"><div class="adot" style="background:#dc3232"></div>A0</div>
+        <div class="brow">
+          <div class="blbl"><span>HP</span><span id="hp0">3/3</span></div>
+          <div class="bar"><div class="bf bfhp" id="hpb0" style="width:100%"></div></div>
+        </div>
+        <div class="brow">
+          <div class="blbl"><span>Hunger</span><span id="hg0">0</span></div>
+          <div class="bar"><div class="bf bfhg" id="hgb0" style="width:0%"></div></div>
+        </div>
+        <div class="ast" id="as0"></div>
+      </div>
+      <!-- A1 -->
+      <div class="acard" id="ac1">
+        <div class="ah"><div class="adot" style="background:#c88c00"></div>A1</div>
+        <div class="brow">
+          <div class="blbl"><span>HP</span><span id="hp1">3/3</span></div>
+          <div class="bar"><div class="bf bfhp" id="hpb1" style="width:100%"></div></div>
+        </div>
+        <div class="brow">
+          <div class="blbl"><span>Hunger</span><span id="hg1">0</span></div>
+          <div class="bar"><div class="bf bfhg" id="hgb1" style="width:0%"></div></div>
+        </div>
+        <div class="ast" id="as1"></div>
+      </div>
+      <!-- A2 -->
+      <div class="acard" id="ac2">
+        <div class="ah"><div class="adot" style="background:#0082d2"></div>A2</div>
+        <div class="brow">
+          <div class="blbl"><span>HP</span><span id="hp2">3/3</span></div>
+          <div class="bar"><div class="bf bfhp" id="hpb2" style="width:100%"></div></div>
+        </div>
+        <div class="brow">
+          <div class="blbl"><span>Hunger</span><span id="hg2">0</span></div>
+          <div class="bar"><div class="bf bfhg" id="hgb2" style="width:0%"></div></div>
+        </div>
+        <div class="ast" id="as2"></div>
+      </div>
+    </div>
+
+    <div id="log-wrap">
+      <h3>Episode Log</h3>
+      <div id="log"></div>
+    </div>
+
+    <div id="sbar">
+      <span id="smsg">Enter HF token and click Reset to start.</span>
+      <span id="think"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+let obs = null;
+let running = false;
+let timer = null;
+let postmortems = {};
+
+// ── Grid ──────────────────────────────────────────────────────────────────────
+function renderGrid(o) {
+  const el = document.getElementById('grid');
+  el.innerHTML = '';
+  if (!o || !o.grid) return;
+
+  const amap = {}, zmap = {};
+  for (const a of (o.agents || [])) {
+    if (a.is_alive) amap[`${a.row},${a.col}`] = a;
+  }
+  for (const z of (o.zombies || [])) {
+    const k = `${z.row},${z.col}`;
+    zmap[k] = (zmap[k] || 0) + 1;
+  }
+
+  const curId = o.metadata?.current_agent_id;
+
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 10; c++) {
+      const div = document.createElement('div');
+      div.className = 'cell';
+      const t = o.grid[r][c];
+      if      (t === '#') { div.className += ' c-wall'; div.textContent = '\u25aa'; }
+      else if (t === 'F') div.className += ' c-food';
+      else if (t === 'S') div.className += ' c-safe';
+      else                div.className += ' c-empty';
+
+      const k = `${r},${c}`;
+
+      if (zmap[k]) {
+        const zm = document.createElement('div');
+        zm.className = 'zombie-m';
+        zm.textContent = '\u2623' + (zmap[k] > 1 ? '\u00d7' + zmap[k] : '');
+        zm.title = `Zombie at (${r},${c})`;
+        div.appendChild(zm);
+      }
+
+      if (amap[k]) {
+        const a = amap[k];
+        const am = document.createElement('div');
+        am.className = `agent-m am-${a.agent_id}`;
+        if (!a.is_alive) am.className += ' am-dead';
+        if (a.agent_id === curId) am.className += ' am-cur';
+        am.textContent = `A${a.agent_id}`;
+        am.title = `A${a.agent_id}  HP:${a.hp}  Hunger:${a.hunger}`;
+        div.appendChild(am);
+      }
+
+      el.appendChild(div);
+    }
+  }
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function updateSide(o) {
+  if (!o) return;
+
+  document.getElementById('step-n').textContent = o.step_count ?? '—';
+
+  const phase = o.metadata?.phase || '';
+  const pb = document.getElementById('phase-badge');
+  pb.style.display = phase ? '' : 'none';
+  pb.textContent = phase.replace(/_/g, ' ');
+
+  const curId = o.metadata?.current_agent_id;
+
+  for (const a of (o.agents || [])) {
+    const i = a.agent_id;
+    document.getElementById(`ac${i}`).classList.toggle('cur', i === curId);
+    document.getElementById(`ac${i}`).classList.toggle('dead', !a.is_alive);
+
+    document.getElementById(`hp${i}`).textContent = `${a.hp}/3`;
+    document.getElementById(`hpb${i}`).style.width = `${(a.hp / 3) * 100}%`;
+
+    const hg = a.hunger;
+    document.getElementById(`hg${i}`).textContent = hg;
+    const hgPct = Math.min(100, (hg / 15) * 100);
+    document.getElementById(`hgb${i}`).style.width = `${hgPct}%`;
+    document.getElementById(`hgb${i}`).style.background =
+      hg >= 13 ? '#dc2626' : hg >= 9 ? '#f0883e' : '#56d364';
+
+    const tags = [];
+    if (!a.is_alive)                    tags.push('<span style="color:#555">&#x1f480; dead</span>');
+    if (a.is_infected && a.is_alive)    tags.push('<span style="color:#ff6b6b">&#x2623; infected</span>');
+    if (a.locked_out)                   tags.push('<span style="color:#f0883e">&#x1f6ab; locked</span>');
+    if (i === curId && a.is_alive)      tags.push('<span style="color:#58a6ff">&#8592; acting</span>');
+    document.getElementById(`as${i}`).innerHTML = tags.join(' ') || '<span style="color:#555">ok</span>';
+  }
+}
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+function log(html, cls = '') {
+  const l = document.getElementById('log');
+  const d = document.createElement('div');
+  d.className = `le ${cls}`;
+  d.innerHTML = html;
+  l.appendChild(d);
+  l.scrollTop = l.scrollHeight;
+}
+
+function setStatus(msg, thinking = false) {
+  document.getElementById('smsg').textContent = msg;
+  document.getElementById('think').innerHTML = thinking
+    ? '<span class="thinking">&#9889; thinking&hellip;</span>' : '';
+}
+
+// ── API ───────────────────────────────────────────────────────────────────────
+async function doReset() {
+  setStatus('Resetting…');
+  try {
+    const r = await fetch('/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    obs = await r.json();
+    document.getElementById('log').innerHTML = '';
+    log(`<span class="li">&#9658; New episode. Step ${obs.step_count}/100. A${obs.metadata?.current_agent_id ?? 0} acts first.</span>`);
+    renderGrid(obs);
+    updateSide(obs);
+    document.getElementById('b-step').disabled = false;
+    document.getElementById('b-run').disabled = false;
+    setStatus(`Ready — A${obs.metadata?.current_agent_id ?? 0}'s turn.`);
+  } catch (e) {
+    log(`<span class="le-err">Reset error: ${e.message}</span>`);
+    setStatus('Reset failed.');
+  }
+}
+
+async function callHF(o) {
+  const token = document.getElementById('hf-token').value.trim();
+  if (!token) throw new Error('Enter your HF token above first.');
+
+  const model = document.getElementById('model').value;
+  const agentId = o.metadata?.current_agent_id ?? 0;
+  const situation = o.description || '(no description)';
+
+  const pm = postmortems[agentId] || [];
+  const pastBlock = pm.length
+    ? '== PAST FAILURES ==\n' + pm.slice(-3).join('\n') + '\n'
+    : '';
+
+  const sysPrompt = `You are agent A${agentId} in SurviveCity, a zombie-apocalypse survival sim.
+
+== WORLD ==
+- 3 agents (A0,A1,A2) on a 10x10 grid with 3 zombies.
+- Food depots (F) at corners. Use "eat" when on F to reset hunger.
+- Safehouse (S) in centre — heals 1HP/step, zombies can't enter.
+- Walls (#) block movement. Hunger +1/step; at hunger>=15 you lose HP.
+
+== INFECTION ==
+- One agent is secretly infected (hungers 1.5x faster).
+- After step 30 the infected agent learns their status and attacks neighbours.
+
+== VOTE (step 50) ==
+- All agents vote to lock one agent out of the safehouse.
+- use vote_lockout + vote_target to vote.
+
+== ACTIONS ==
+Output EXACTLY one JSON object:
+{"action_type":"<type>","vote_target":<int|null>,"message":"<str|null>"}
+Types: move_up move_down move_left move_right eat wait vote_lockout broadcast
+
+${pastBlock}== NOW ==
+${situation}
+
+Reply with ONLY the JSON. No prose.`;
+
+  const resp = await fetch(
+    `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user', content: 'Your move.' },
+        ],
+        max_tokens: 80,
+        temperature: 0.7,
+      }),
+    }
+  );
+
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`HF API ${resp.status}: ${txt.slice(0, 180)}`);
+  }
+
+  const data = await resp.json();
+  const content = data.choices?.[0]?.message?.content || '';
+
+  // Extract JSON from the model's response
+  const m = content.match(/\{[^}]*\}/);
+  if (!m) throw new Error(`Model returned no JSON: "${content.slice(0, 120)}"`);
+
+  const action = JSON.parse(m[0]);
+  action.agent_id = agentId;
+  return action;
+}
+
+async function doStep() {
+  if (!obs)       { log('<span class="le-err">Reset first.</span>'); return; }
+  if (obs.done)   { log('<span class="ld">Episode over — reset for a new one.</span>'); return; }
+
+  const agentId = obs.metadata?.current_agent_id ?? 0;
+  setStatus(`A${agentId} thinking…`, true);
+  document.getElementById('b-step').disabled = true;
+  document.getElementById('b-reset').disabled = true;
+
+  let action;
+  try {
+    action = await callHF(obs);
+  } catch (e) {
+    log(`<span class="le-err">&#9888; ${escHtml(e.message)}</span>`);
+    setStatus('Error — check token/model.');
+    stopRun();
+    document.getElementById('b-step').disabled = false;
+    document.getElementById('b-reset').disabled = false;
+    return;
+  }
+
+  const desc = fmtAction(action);
+  log(`<span class="la${agentId}">A${agentId}: ${desc}</span>`);
+
+  try {
+    const r = await fetch('/step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(action),
+    });
+    obs = await r.json();
+
+    if (obs.reward !== undefined)
+      log(`<span class="lr">reward ${obs.reward.toFixed(3)}</span>`);
+
+    renderGrid(obs);
+    updateSide(obs);
+
+    // Collect postmortems if present
+    if (obs.metadata?.postmortem) {
+      const aid = obs.metadata.postmortem_agent_id ?? agentId;
+      postmortems[aid] = [...(postmortems[aid] || []), obs.metadata.postmortem];
+    }
+
+    if (obs.done) {
+      log(`<span class="ld">&#9733; Episode complete — step ${obs.step_count}.</span>`);
+      setStatus('Done! Reset for another episode.');
+      stopRun();
+      document.getElementById('b-run').disabled = true;
+    } else {
+      const nxt = obs.metadata?.current_agent_id ?? 0;
+      setStatus(`Step ${obs.step_count}/100 — A${nxt}'s turn.`);
+    }
+  } catch (e) {
+    log(`<span class="le-err">Step error: ${escHtml(e.message)}</span>`);
+    setStatus('Step failed.');
+    stopRun();
+  }
+
+  document.getElementById('b-step').disabled = obs?.done ?? false;
+  document.getElementById('b-reset').disabled = false;
+}
+
+function fmtAction(a) {
+  let s = `<b>${a.action_type}</b>`;
+  if (a.vote_target !== null && a.vote_target !== undefined) s += ` &#8594; A${a.vote_target}`;
+  if (a.message) s += ` &ldquo;${escHtml(String(a.message).slice(0, 40))}&rdquo;`;
+  return s;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Run loop ──────────────────────────────────────────────────────────────────
+function toggleRun() {
+  if (running) stopRun(); else startRun();
+}
+function startRun() {
+  if (!obs || obs.done) return;
+  running = true;
+  document.getElementById('b-run').textContent = '\u23f8 Stop';
+  document.getElementById('b-run').classList.add('stop');
+  tick();
+}
+function stopRun() {
+  running = false;
+  clearTimeout(timer);
+  document.getElementById('b-run').textContent = '\u25b6 Run';
+  document.getElementById('b-run').classList.remove('stop');
+}
+async function tick() {
+  if (!running) return;
+  await doStep();
+  if (running && obs && !obs.done) {
+    const delay = parseInt(document.getElementById('speed').value);
+    timer = setTimeout(tick, delay);
+  }
+}
+
+// Speed label
+document.getElementById('speed').addEventListener('input', function () {
+  document.getElementById('speed-lbl').textContent = (this.value / 1000).toFixed(1) + 's';
+});
+</script>
+</body>
+</html>
