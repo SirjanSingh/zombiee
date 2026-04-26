@@ -95,6 +95,45 @@ Diff size: ~60 lines of functional code across 4 modified files
 new tests/smoke scripts in 2 new files (`tests/test_reward_fixes.py`,
 `scripts/smoke_test_reward_variance.py`). No deletions.
 
+### Forage shaping (distance-to-food signal) — at a glance
+
+This is the single biggest behavioural lever in the design — it's why
+the policy will actually learn to find food instead of starving in
+~75% of episodes. Surfacing it here so it's not buried across three
+sections.
+
+**What's added:** every alive agent gets a per-step reward proportional
+to how much closer they moved to the nearest food cell in that action.
+
+**The signal:**
+- `Φ(agent) = − 0.005 × Manhattan_distance_to_nearest_food`
+- Shaped reward per action: `Φ(after) − Φ(before)` = `+0.005 × (prev_dist − cur_dist)`
+- Move 1 cell closer to food → +0.005 reward (same magnitude as the alive bonus)
+- Move 1 cell farther → −0.005 reward
+- Wait / move parallel to food → 0 (net-zero)
+- Round-trip (closer then back) → 0 (net-zero, optimal policy preserved)
+
+**Why potential-based (`Φ` form, not direct distance penalty):**
+- A direct `−0.001 × distance` per step would distort the optimal
+  policy (model could circle near food to harvest reward without
+  eating).
+- Potential-based shaping (Ng, Harada, Russell 1999) provably leaves
+  the optimal policy unchanged while accelerating learning. The
+  cumulative shaped reward over any closed trajectory is exactly zero.
+
+**How the agent state tracks this:**
+- `prev_food_dist_this_step` — snapshotted at the start of `apply_agent_action`
+- `cur_food_dist_this_step` — snapshotted at the end (after movement / eat / etc.)
+- Both reset implicitly by the next action's snapshot — no explicit drain
+- Helper: `_min_food_dist(row, col)` returns Manhattan distance to nearest
+  cell in `FOOD_CELLS`, or 99 if no food cells exist (defensive)
+
+**Hyperparameter:** the coefficient `0.005` is tuned so that one cell
+of progress is worth the same as one step of being alive — a natural
+unit. Larger values risk the model preferring to circle food forever
+(hard to do with potential-based, but possible if eat fails); smaller
+values make the gradient too weak to bootstrap.
+
 ## Architecture
 
 Three rubric-related modules change, plus one line in train.py and a
