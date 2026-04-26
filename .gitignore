@@ -22,7 +22,6 @@ env/
 
 # Training artifacts
 lora_v1/
-lora_v2/
 wandb/
 runs/
 *.ckpt
@@ -43,5 +42,5 @@ v2/
 .planning2/
 .claude/
 version2.md
-v1/notebooks/train_v1_kaggle_extend.ipynb
-v1/notebooks/eval_v1_kaggle_extend.ipynb
+notebooks/train_v1_kaggle_extend.ipynb
+notebooks/eval_v1_kaggle_extend.ipynb
