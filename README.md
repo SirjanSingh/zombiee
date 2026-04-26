@@ -18,6 +18,8 @@ tags:
 
 </div>
 
+> 🎮 **Try it live:** **[zombiee-tau.vercel.app](https://zombiee-tau.vercel.app)** — interactive web demo, switch between the v1 and extended adapters, watch episodes play out in real time.
+
 > **Bonus:** an extended 4000-step Kaggle run gets survival to **12 %** and shows **near-certain (~1.0) detection of the hidden infected agent by t≈80** — see [Extended training](#extended-training-run-4000-steps) below.
 
 ## What This Is
@@ -206,8 +208,11 @@ python -m training.inference --random --episodes 50
 
 ## Links
 
-- **HuggingFace model — v1 (step-12, served by the report):** https://huggingface.co/noanya/zombiee
-- **HuggingFace model — extended (4000 steps, served by the Space):** https://huggingface.co/noanya/zombiee-v1-extended
+- **🎮 Live web demo:** https://zombiee-tau.vercel.app
+- **HuggingFace Space — v1 backend (env API):** https://huggingface.co/spaces/noanya/zombiee
+- **HuggingFace Space — extended backend (env API, served by the demo):** https://huggingface.co/spaces/noanya/zombiee-v1-extended
+- **HuggingFace model — v1 (step-12, anchors the report):** https://huggingface.co/noanya/zombiee
+- **HuggingFace model — extended (4000 steps):** https://huggingface.co/noanya/zombiee-v1-extended
 - **Colab v1 training notebook:** [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb)
 - **Colab v1 eval notebook:** [`notebooks/eval_colab.ipynb`](notebooks/eval_colab.ipynb)
 - **Kaggle extended training notebook:** [`notebooks/train_v1_kaggle_extend.ipynb`](notebooks/train_v1_kaggle_extend.ipynb)
