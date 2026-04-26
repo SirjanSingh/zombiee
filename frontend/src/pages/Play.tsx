@@ -1,15 +1,24 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Grid } from "../components/Grid";
 import { AgentRoster, BroadcastFeed, PhaseBar, PostmortemFeed } from "../components/Hud";
 import { Icon } from "../components/Icon";
-import { useEpisode } from "../hooks/useEpisode";
+import { HF_SPACE_ENDPOINTS, useEpisode, type BackendConfig } from "../hooks/useEpisode";
+
+type BackendKey = "local" | keyof typeof HF_SPACE_ENDPOINTS | string;
+
+function configFromKey(key: BackendKey): BackendConfig {
+  if (key === "local") return { kind: "local" };
+  return { kind: "hf", spaceKey: key };
+}
 
 export default function Play() {
-  const ep = useEpisode({ seed: 42, speed: 4, autoStart: true, loopOnEnd: false });
+  const [backendKey, setBackendKey] = useState<BackendKey>("local");
   const [fog, setFog] = useState(true);
   const [speed, setSpeed] = useState(4);
   const [seedInput, setSeedInput] = useState("42");
-  const [backend, setBackend] = useState<"local" | "colab" | "dgx">("local");
+
+  const backendConfig = useMemo(() => configFromKey(backendKey), [backendKey]);
+  const ep = useEpisode({ seed: 42, speed: 4, autoStart: true, loopOnEnd: false, backend: backendConfig });
 
   const handleSpeed = (s: number) => { setSpeed(s); ep.setSpeed(s); };
   const handleReset = () => {
@@ -25,10 +34,17 @@ export default function Play() {
           <h1 className="mt-1 text-3xl font-display tracking-tight">Run the environment</h1>
           <p className="text-ink-2 mt-1 text-sm max-w-xl">
             The same engine that powers training — recompiled to TypeScript so you can step through it in your browser
-            with no GPU. Toggle <em>fog</em> to hide the infected role from the audience.
+            with no GPU. Or point it at a deployed Hugging Face Space to drive the real Python env over HTTP.
+            Toggle <em>fog</em> to hide the infected role from the audience.
           </p>
         </div>
-        <BackendPicker backend={backend} onChange={setBackend} />
+        <BackendPicker
+          backend={backendKey}
+          onChange={setBackendKey}
+          isRemote={ep.isRemote}
+          status={ep.remoteStatus}
+          error={ep.remoteError}
+        />
       </div>
 
       <div className="grid lg:grid-cols-[auto_1fr] gap-6 items-start">
@@ -126,26 +142,63 @@ function Controls({
   );
 }
 
-function BackendPicker({ backend, onChange }: { backend: string; onChange: (b: any) => void }) {
-  const opts = [
-    { key: "local", label: "Browser engine", desc: "TS port · 0 GPU" },
-    { key: "colab", label: "Colab tunnel", desc: "T4 · LLM inference" },
-    { key: "dgx", label: "DGX endpoint", desc: "A100/H100 · prod" },
+function BackendPicker({
+  backend, onChange, isRemote, status, error,
+}: {
+  backend: string;
+  onChange: (b: string) => void;
+  isRemote: boolean;
+  status: { kind: string; message?: string; latencyMs?: number } | null;
+  error: string | null;
+}) {
+  const opts: { key: string; label: string; desc: string }[] = [
+    { key: "local", label: "Browser engine", desc: "TS port · 0 GPU · always available" },
+    ...Object.entries(HF_SPACE_ENDPOINTS).map(([key, v]) => ({
+      key,
+      label: v.label,
+      desc: `${v.desc} · ${v.url}`,
+    })),
   ];
+
+  // Status pill colour
+  const statusColor =
+    error ? "bg-neon-rose/70" :
+    status?.kind === "ready" ? "bg-neon-lime" :
+    status?.kind === "stepping" || status?.kind === "connecting" ? "bg-neon-amber animate-pulse" :
+    "bg-ink-3";
+  const statusText =
+    error ? "space error" :
+    !isRemote ? "browser engine" :
+    status?.message ?? "—";
+
   return (
-    <div className="panel p-3 flex items-center gap-2">
-      <Icon.Cpu size={16} className="text-neon-purple" />
-      {opts.map(o => (
-        <button key={o.key} onClick={() => onChange(o.key)}
-          className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
-            backend === o.key
-              ? "bg-neon-violet/25 text-ink-0 border border-neon-violet/40"
-              : "text-ink-2 hover:bg-ink-4/20 border border-transparent"
-          }`}
-          title={o.desc}>
-          {o.label}
-        </button>
-      ))}
+    <div className="flex flex-col gap-1.5 items-end">
+      <div className="panel p-3 flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 pr-2 border-r border-ink-4/30">
+          <Icon.Cpu size={16} className="text-neon-purple" />
+          <span className="mono-label">backend</span>
+        </div>
+        {opts.map(o => (
+          <button key={o.key} onClick={() => onChange(o.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
+              backend === o.key
+                ? "bg-neon-violet/25 text-ink-0 border border-neon-violet/40"
+                : "text-ink-2 hover:bg-ink-4/20 border border-transparent"
+            }`}
+            title={o.desc}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <div className="chip text-[11px] font-mono">
+        <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+        <span className={error ? "text-neon-rose" : "text-ink-2"} title={error ?? statusText}>
+          {statusText}
+        </span>
+        {isRemote && status?.latencyMs !== undefined && !error && (
+          <span className="text-ink-3">· {Math.round(status.latencyMs)}ms</span>
+        )}
+      </div>
     </div>
   );
 }
