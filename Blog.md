@@ -22,7 +22,7 @@ date: April 26, 2026
 
 **An OpenEnv-Compliant Multi-Agent Environment for Cross-Episode Failure-Replay Learning in LLMs**
 
-🎮 [**Live Demo**](https://zombiee-tau.vercel.app) · 🤗 [**Models**](https://huggingface.co/noanya) · 💻 [**Code**](https://github.com/SirjanSingh/zombiee) · 📄 [**Report**](https://github.com/SirjanSingh/zombiee/blob/main/report/v1/v1.tex)
+🎮 [**Live Demo**](https://zombiee-tau.vercel.app) · 🤗 [**Models**](https://huggingface.co/noanya) · 💻 [**Code**](https://github.com/SirjanSingh/zombiee) · 📄 [**Report**](https://github.com/SirjanSingh/zombiee/blob/master/report/v1/v1.tex)
 
 *Built for the Meta × PyTorch × Scaler OpenEnv Hackathon · Team PyGuys (Sirjan Singh, Eeshan Singh)*
 
@@ -361,7 +361,7 @@ Anecdotal — but it exemplifies the env's central premise: text-channel theory-
 
 ## 💎 The Money Chart
 
-After the hackathon-window 12-step run, we trained an extended **4000-step** run on Kaggle (artefacts at [`noanya/zombiee-v1-extended`](https://huggingface.co/noanya/zombiee-v1-extended)). Headline numbers held up directionally — survival rate climbed to 12 %, vote accuracy reached 20 % on episodes that hit the vote phase. But the most informative chart from the entire project is this one:
+During the hackathon-window 12-step run, we trained an extended **4000-step** run on Kaggle (artefacts at [`noanya/zombiee-v1-extended`](https://huggingface.co/noanya/zombiee-v1-extended)). Headline numbers held up directionally — survival rate climbed to 12 %, vote accuracy reached 20 % on episodes that hit the vote phase. But the most informative chart from the entire project is this one:
 
 <p align="center">
   <img src="report/v1/figures/infected_detection.png" width="92%" alt="Per-step infected detection trajectory" />
