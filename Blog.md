@@ -156,7 +156,7 @@ Concrete reasoning chain in 40 characters: identified a specific peer (A2), refe
 
 After the hackathon-window 12-step run, we trained an extended 4000-step run on Kaggle (artefacts at [`noanya/zombiee-v1-extended`](https://huggingface.co/noanya/zombiee-v1-extended)). Headline numbers held up directionally — survival rate climbed to 12 %, vote accuracy reached 20 % on episodes that hit the vote phase. But the most informative chart from the extended run is this one:
 
-![Per-step infected detection trajectory](https://huggingface.co/datasets/noanya/zombiee-blog-assets/resolve/main/infected_detection.png)
+![Per-step infected detection trajectory](https://huggingface.co/noanya/zombiee-v1-extended/blob/main/eval_results/infected_detection.png)
 *Per-step mean suspicion on the true infected agent across an episode. Trained policy (blue) climbs from ~0.33 (chance for a 1-of-3 hidden role) at t=1 to ~1.0 by t≈80; uniform-random baseline (orange) stays at chance throughout. Vertical markers: red dashed = infection reveal at t=30, green dashed = vote at t=50.*
 
 Read this chart for what it actually says. The trained policy starts at chance — it has no information about who's infected at t=1, so its prior is uniform across the three agents. From t=30 (when the infected agent's hunger rate divergence starts producing observable behavioural cues), the suspicion-on-true-infected curve **bends upward and stays bent** until it saturates at near-certainty around t≈80. The random baseline produces a flat line at 0.33 because random voting and random observation produce no information.
