@@ -170,32 +170,34 @@ judges.}
 
 \subsection{World and agents}
 A fixed $10\!\times\!10$ grid (Figure~\ref{fig:grid}) with four food depots
-(\texttt{F}) at the corners, a $3\!\times\!3$ central safehouse (\texttt{S})
-that heals 1\,HP per occupied step, and eight wall cells creating chokepoints.
-Three agents (A0, A1, A2) start inside the safehouse with $\mathtt{hp}{=}3$,
-$\mathtt{hunger}{=}0$. Three zombies (Z0, Z1, Z2) spawn at the corners, move
-1 cell per step toward the nearest non-safehouse agent via BFS, and cannot
-enter safehouse cells. Hunger increments by 1 per agent action;
-$\mathtt{hunger}\!\geq\!15$ deals 1\,HP per step. Eating on a food cell resets
-hunger.
+(\texttt{F}) near the corners, a $3\!\times\!3$ central safehouse (\texttt{S})
+at rows 4--6 cols 4--6 that heals 1\,HP per occupied step, and eight wall
+cells creating chokepoints. Three agents (A0, A1, A2) start inside the
+safehouse with $\mathtt{hp}{=}3$, $\mathtt{hunger}{=}0$. Three zombies
+(Z0, Z1, Z2) spawn at three of the four grid corners, move 1 cell per step
+toward the nearest non-safehouse agent via BFS, and cannot enter safehouse
+cells. Hunger increments by 1 per agent action;
+$\mathtt{hunger}\!\geq\!15$ deals 1\,HP per step. Eating on a food cell
+resets hunger.
 
 \begin{figure}[h]
   \centering
 \begin{lstlisting}[basicstyle=\ttfamily\footnotesize,frame=single,framesep=4pt,backgroundcolor=\color{gray!8}]
   Z . . . . . . . . Z
-  . . # . . . . # . .
-  . . . . . . . . . .
-  . . . S S S . . . .
-  F . . S S S . . . F
-  F . . S S S . . . F
-  . . . . . . . . . .
-  . . # . . . . # . .
-  . . . . . . . . . .
-  Z . . . . . . . . Z
+  . F . . . . . . F .
+  . . . . . # . . . .
+  . . . # . . # . . .
+  . . . . S S S . . .
+  . . # . S S S # . .
+  . . . . S S S . . .
+  . . . # . # # . . .
+  . F . . . . . . F .
+  . . . . . . . . . Z
 \end{lstlisting}
-  \caption{Fixed $10\!\times\!10$ layout. \texttt{F} = food, \texttt{S} = $3\!\times\!3$
-           safehouse, \texttt{\#} = wall, \texttt{Z} = zombie spawn corner.
-           Agents start inside \texttt{S}.}
+  \caption{Fixed $10\!\times\!10$ layout. \texttt{F} = food (4, at the
+           inner corners), \texttt{S} = $3\!\times\!3$ central safehouse,
+           \texttt{\#} = wall, \texttt{Z} = zombie spawn (3 zombies, one
+           per occupied corner). Agents start inside \texttt{S}.}
   \label{fig:grid}
 \end{figure}
 
