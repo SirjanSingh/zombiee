@@ -2,7 +2,7 @@
 
 Three independent rubrics compose into obs.reward. All deterministic, no LLM judge.
   - SurvivalRubric: dense, per-step
-  - VoteRubric: sparse, fires once at step 50
+  - VoteRubric: sparse, fires once at step 51
   - GroupOutcomeRubric: terminal, fires on episode end
 
 OpenEnv compliance: clamped to (0.01, 0.99), never exactly 0.0 or 1.0.
