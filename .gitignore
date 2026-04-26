@@ -42,5 +42,3 @@ v2/
 .planning2/
 .claude/
 version2.md
-notebooks/train_v1_kaggle_extend.ipynb
-notebooks/eval_v1_kaggle_extend.ipynb

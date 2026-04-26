@@ -1,53 +1,60 @@
-# Cross-machine training (Colab ⇄ Kaggle ⇄ DGX)
+# Training & Evaluation Notebooks
 
-Free GPU sessions disconnect frequently. These notebooks run the same GRPO
-training loop and use the **Hugging Face Hub** as a checkpoint bridge so the
-run can hop between machines without losing progress.
+Free GPU sessions disconnect frequently. These notebooks run the GRPO
+training and LLM-driven evaluation, and use the **Hugging Face Hub** as a
+checkpoint bridge so a run can hop between machines without losing progress.
 
 ## Files
 
-| Path | Target | Purpose |
-|---|---|---|
-| `train_colab.ipynb` | Google Colab (T4) | Installs deps, clones the repo (private-repo-safe via `http.extraheader`), starts the env server, runs `training/train.py`, pushes a checkpoint to HF Hub after every gradient update. |
-| `train_kaggle.ipynb` | Kaggle (T4 / P100 / L4) | Same flow as the Colab notebook, but uses `kaggle_secrets.UserSecretsClient` and `/kaggle/working` paths. |
+| Notebook | Target | Purpose | Pushes to |
+|---|---|---|---|
+| `train_colab.ipynb` | Colab T4 | v1 training: 12 GRPO steps, save every step. Source of the report's headline run (3 h 53 min wallclock). | `noanya/zombiee` |
+| `eval_colab.ipynb` | Colab T4 | v1 evaluation: $n_b{=}30$ random vs. $n_t{=}10$ trained against `checkpoint-12`. Produces `eval_step_0012.json`, bars, history chart. | `noanya/zombiee/eval_results/` |
+| `train_v1_kaggle_extend.ipynb` | Kaggle T4 / P100 / L4 | Extended training: 4000 GRPO steps on the same env, separate Hub repo to avoid clobbering v1. | `noanya/zombiee-v1-extended` |
+| `eval_v1_kaggle_extend.ipynb` | Kaggle T4 | Extended evaluation: per-step infected-detection trajectory, survival/vote-accuracy across checkpoints. Produces the report's Figure 4 and the README's headline plot. | `noanya/zombiee-v1-extended/eval_results/` |
 
-Both notebooks share defaults: `MAX_STEPS=12`, `SAVE_STEPS=1`, `NUM_GENERATIONS=4`,
-`gradient_accumulation_steps=16` (set in `training/train.py`). On a T4 each
-GRPO step takes ~15-20 min, so you get a checkpoint roughly every 20 minutes
-and a full run finishes in ~3-4h.
+Defaults for the v1 Colab training notebook: `MAX_STEPS=12`, `SAVE_STEPS=1`,
+`NUM_GENERATIONS=4`, `gradient_accumulation_steps=16`. On a T4 each GRPO step
+takes ~15-20 min, so a checkpoint lands every ~20 minutes and the full run
+finishes in ~3-4 h.
 
-## How resume works end-to-end
+The extended Kaggle notebook uses `MAX_STEPS=4000` with sparser saves
+(`SAVE_STEPS=1000`) and pushes to a **separate** Hub repo
+(`noanya/zombiee-v1-extended`) so the v1 artefacts on `noanya/zombiee` are
+never touched by the long run.
+
+## Resume mechanism
 
 ```
               ┌─────────── Hugging Face Hub ───────────┐
-              │   <user>/<repo>                         │
-              │   ├── checkpoint-1/                     │
-              │   ├── checkpoint-2/                     │
+              │   noanya/zombiee  (v1)                  │
+              │   noanya/zombiee-v1-extended  (long run)│
+              │   ├── checkpoint-N/                     │
               │   ├── trainer_state.json                │
               │   └── adapter_model.safetensors         │
               └──────────────┬──────────────────────────┘
                   push_to_hub │             │ resume_from_checkpoint
                               ▼             ▼
-        ┌─────────────────┐ ┌─────────────────┐ ┌──────────────────┐
-        │ Colab notebook  │ │ Kaggle notebook │ │ DGX docker run   │
-        │  (T4)           │ │  (T4 / P100)    │ │  (V100)          │
-        └─────────────────┘ └─────────────────┘ └──────────────────┘
+                   ┌─────────────────┐ ┌─────────────────┐
+                   │ Colab notebook  │ │ Kaggle notebook │
+                   │  (T4)           │ │  (T4 / P100)    │
+                   └─────────────────┘ └─────────────────┘
 ```
 
 `training/train.py` accepts:
 
 - `--push-to-hub --hub-model-id <user/repo>` — uploads `checkpoint-N/` after each save (`hub_strategy="every_save"`) and a final model on success.
 - `--resume-from-checkpoint <spec>` where `<spec>` is one of:
-  - `auto` — pick newest `checkpoint-*` under `--output-dir`
+  - `auto` — pick the newest `checkpoint-*` under `--output-dir`
   - `<local path>` — resume from that directory
   - `<user/repo>` — `snapshot_download` from the Hub, then resume
-- `--save-total-limit N` — keep only the last `N` checkpoints on disk (older ones are deleted; older ones on the Hub stay until you prune the repo).
+- `--save-total-limit N` — keep only the last `N` checkpoints on disk.
 
-## Required secrets (both notebooks)
+## Required secrets (all notebooks)
 
 | Secret | Scope | Purpose |
 |---|---|---|
-| `GITHUB_TOKEN` | Fine-grained PAT with `Contents: Read` on the repo (or classic with `repo`) | Authenticate `git clone` for the private repo |
+| `GITHUB_TOKEN` | Fine-grained PAT with `Contents: Read` on the repo (or classic with `repo`) | Authenticate `git clone` for the repo |
 | `HF_TOKEN` | HuggingFace token, **write** | Push checkpoints to your HF Hub repo |
 
 The clone cell embeds the GitHub token into a `git -c http.extraheader=...`
@@ -55,64 +62,50 @@ config so it never appears in `argv` or tracebacks. Errors are scrubbed before
 being raised. Use a fine-grained PAT scoped to a single repo to limit blast
 radius if a token leaks.
 
-## First-time setup
-
-### Colab
+## Quick start — Colab (v1 training)
 
 1. Push the latest code to GitHub so the notebook can clone it
 2. Open `notebooks/train_colab.ipynb` on Colab (File → Open → GitHub, or upload the file)
 3. Runtime → Change runtime type → T4 GPU
 4. 🔑 Secrets (left sidebar) → add `GITHUB_TOKEN` and `HF_TOKEN`, toggle Notebook access ON for both
-5. Edit `HUB_MODEL_ID` in the Configuration cell
+5. Edit `HUB_MODEL_ID` in the Configuration cell (defaults to `noanya/zombiee`)
 6. Runtime → Run All
 
-After the install cell (cell 3) finishes the first time, do **Runtime → Restart Session** then **Run All** again so the upgraded packages are picked up cleanly.
+After the install cell finishes the first time, do **Runtime → Restart Session** then **Run All** again so the upgraded packages are picked up cleanly.
 
-### Kaggle
+## Quick start — Kaggle (extended training)
 
 1. Push the latest code to GitHub
-2. Open `notebooks/train_kaggle.ipynb` on Kaggle (File → Import Notebook)
+2. Open `notebooks/train_v1_kaggle_extend.ipynb` on Kaggle (File → Import Notebook)
 3. Settings:
    - Accelerator: `GPU T4 x1` (P100 or L4 also work)
    - Internet: On
    - Persistence: Variables and Files
 4. Add-ons → Secrets → add `GITHUB_TOKEN` and `HF_TOKEN`, attach both to the notebook
-5. Edit `HUB_MODEL_ID` in the Configuration cell
+5. Edit `HUB_REPO` in the Configuration cell — keep it as `noanya/zombiee-v1-extended` to keep the long run isolated from the v1 repo
 6. Run All (or *Save Version → Save & Run All (Commit)* to run headless on Kaggle's infra and free up the tab)
 
-### DGX
+## Quick start — evaluation
 
-```bash
-git pull
-docker build -f Dockerfile.dgx -t survivecity-train .
+After a training run finishes (or anywhere mid-training), open the matching
+eval notebook:
 
-docker run --rm --gpus '"device=N"' --shm-size=8g \
-  -e HUGGINGFACE_TOKEN=hf_xxx \
-  -v $(pwd)/lora_v1:/app/lora_v1 \
-  survivecity-train \
-  bash -c "uvicorn server.app:app --host 0.0.0.0 --port 7860 & sleep 3 && \
-    python -m training.train \
-      --resume-from-checkpoint <user>/<repo> \
-      --push-to-hub --hub-model-id <user>/<repo> \
-      --max-steps 4000 \
-      --output-dir /app/lora_v1"
-```
+- `eval_colab.ipynb` → evaluates `noanya/zombiee` (v1)
+- `eval_v1_kaggle_extend.ipynb` → evaluates `noanya/zombiee-v1-extended` (extended)
 
-Pick a free GPU index with:
-```
-nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -n -r | head
-```
+Both notebooks pull the LoRA from the Hub, run baseline + trained episode
+batches against a fresh env server, render the metrics charts, and push the
+eval artefacts back to the same repo's `eval_results/` directory.
 
 ## Resuming after a session timeout
 
-Just re-run the notebook (or the DGX command) end-to-end. Cell 6
-(*Detect Existing Checkpoints on Hub*) sees the existing artifacts on the Hub
-and prepends `--resume-from-checkpoint <repo>` to the launch command
-automatically.
+Just re-run the notebook end-to-end. The detect-existing-checkpoints cell
+sees the artefacts on the Hub and prepends `--resume-from-checkpoint <repo>`
+to the launch command automatically.
 
 ## Memory-tightening knobs (if a free T4 OOMs)
 
-In the Configuration cell of either notebook, lower:
+In the Configuration cell of either training notebook, lower:
 
 - `NUM_GENERATIONS` (4 → 2 → 1) — biggest activation-memory lever in GRPO
 - `MAX_SEQ_LENGTH` (2048 → 1024)
@@ -121,25 +114,22 @@ In the Configuration cell of either notebook, lower:
 `training/train.py` also auto-throttles `num_generations` based on free VRAM:
 < 6 GB → 2, < 12 GB → 4. So usually you don't need to touch it manually.
 
-The DGX (V100 32 GB) can run the full Qwen2.5-3B / `NUM_GENERATIONS=8` /
-`MAX_SEQ_LENGTH=4096` config from `Dockerfile.dgx`'s default `CMD`; Kaggle's
-16 GB T4 needs the trimmed defaults shown in the notebook.
-
-## Why so many short steps instead of one long run?
+## Why so many short steps in v1?
 
 Free Colab/Kaggle sessions die unpredictably (idle timeout, queue eviction,
 flaky network). With `MAX_STEPS=500 / SAVE_STEPS=50` the first save fires
-~3h into training; if you get killed at 2h you have nothing. With
+~3 h into training; if you get killed at 2 h you have nothing. With
 `MAX_STEPS=12 / SAVE_STEPS=1` the first save fires after step 1 (~20 min) and
-every step after that. Worst-case you lose 19 min of compute, not 3h.
+every step after that. Worst-case you lose 19 min of compute, not 3 h.
 
-For long stable runs (DGX, paid Colab Pro+) bump `MAX_STEPS` and relax
-`SAVE_STEPS` — the same notebook works.
+The extended Kaggle notebook accepts the longer-run risk because Kaggle's
+Save & Run All Commit mode runs headlessly on Kaggle infrastructure rather
+than relying on a held-open browser tab.
 
 ## "My Colab/Kaggle session died — did I lose anything?"
 
-**No** — as long as `--push-to-hub` was set (it is, in both notebooks), every
-checkpoint up to the last successful save lives on the Hub at
+**No** — as long as `--push-to-hub` was set (it is, in all training notebooks),
+every checkpoint up to the last successful save lives on the Hub at
 `huggingface.co/<HUB_MODEL_ID>`. The `hub_strategy="every_save"` setting in
 `training/train.py` uploads each `checkpoint-N/` immediately after it's
 written to disk, before the next training step begins.
@@ -157,51 +147,3 @@ python scripts/check_hub_checkpoints.py --hub-model-id noanya/zombiee --info
 python scripts/check_hub_checkpoints.py --hub-model-id noanya/zombiee \
     --download ./recovered
 ```
-
-Then resume from anywhere:
-
-| Where | How |
-|---|---|
-| Same Kaggle/Colab notebook | Just re-run it. Cell 6 auto-detects the Hub checkpoint and resumes. |
-| DGX (single GPU) | `python -m training.train --resume-from-checkpoint noanya/zombiee --push-to-hub --hub-model-id noanya/zombiee --output-dir ./lora_v1` |
-| DGX (auto-pick GPU) | `HUGGINGFACE_TOKEN=hf_xxx ./scripts/dgx_autorun.sh` (see below) |
-
-## DGX autorun script
-
-`scripts/dgx_autorun.sh` watches `nvidia-smi` and launches a training
-container as soon as a GPU has enough free memory. It survives container
-crashes (each launch resumes from the same Hub checkpoint), and will spin up
-**additional** containers on other GPUs as they free up — up to `MAX_JOBS`.
-
-Prereqs:
-1. `docker build -f Dockerfile.dgx -t survivecity-train .` (do this once).
-2. Export your HF token: `export HUGGINGFACE_TOKEN=hf_xxx`.
-
-Run:
-
-```bash
-# 1 job, requires 10 GB free on a GPU before launching
-./scripts/dgx_autorun.sh
-
-# Tighter memory budget, allow up to 2 parallel jobs
-MIN_FREE_GB=8 MAX_JOBS=2 ./scripts/dgx_autorun.sh
-
-# See what it would do without actually launching
-DRY_RUN=1 ./scripts/dgx_autorun.sh
-```
-
-Tunables (env vars):
-
-| Var | Default | Meaning |
-|---|---|---|
-| `MIN_FREE_GB` | `10` | Minimum free GPU memory before considering a GPU |
-| `MAX_JOBS` | `1` | Cap on parallel training containers |
-| `POLL_INTERVAL` | `60` | Seconds between `nvidia-smi` scans |
-| `HUB_MODEL_ID` | `noanya/zombiee` | HF Hub repo id |
-| `MAX_STEPS` | `4000` | Passed through to `training/train.py` |
-| `SAVE_STEPS` | `100` | Passed through to `training/train.py` |
-| `OUTPUT_ROOT` | `./lora_v1` | Host dir; per-GPU subdirs are mounted into containers |
-| `DRY_RUN` | `0` | If `1`, prints the launch command without running it |
-
-Containers are named `survivecity-train-gpuN`. Stop everything with
-`Ctrl-C` — the script's `trap` cleans up all launched containers.

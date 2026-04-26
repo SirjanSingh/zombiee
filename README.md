@@ -84,6 +84,14 @@ Representative trained-agent broadcast (40-char cap):
 
 One $n_t{=}10$ episode reached the full 100-step horizon with reward **1.97**. See [`report/v1/v1.tex`](report/v1/v1.tex) for the full writeup.
 
+### Extended training run (4000 steps)
+
+A longer 4000-step run on a Kaggle T4 corroborates the v1 directional findings on a much longer training horizon (artefacts: [`noanya/zombiee-v1-extended`](https://huggingface.co/noanya/zombiee-v1-extended)). Survival rate $0\,\% \rightarrow 12\,\%$ and vote accuracy $20\,\%$ on episodes that reached the vote phase. The clearest signal is the per-step suspicion trajectory:
+
+![Per-step infected detection](report/v1/figures/infected_detection.png)
+
+The trained policy's mean suspicion on the true infected agent climbs from chance (~0.33 for a 1-of-3 hidden-role pick) at $t{=}1$ to near-certainty (~1.0) by $t{\approx}80$, with the lift starting cleanly at the $t{=}30$ infection reveal and continuing past the $t{=}50$ vote. The uniform-random baseline stays at chance throughout. **The HuggingFace Space serves the extended-run adapter.**
+
 ## Quick Start
 
 ### Local Development
@@ -132,9 +140,12 @@ python -m training.inference --random --episodes 50
 
 ## Links
 
-- **HuggingFace model + checkpoints + eval results:** https://huggingface.co/noanya/zombiee
-- **Colab training notebook:** [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb)
-- **Kaggle training notebook:** [`notebooks/train_kaggle.ipynb`](notebooks/train_kaggle.ipynb)
+- **HuggingFace model — v1 (step-12, served by the report):** https://huggingface.co/noanya/zombiee
+- **HuggingFace model — extended (4000 steps, served by the Space):** https://huggingface.co/noanya/zombiee-v1-extended
+- **Colab training notebook (v1):** [`notebooks/train_colab.ipynb`](notebooks/train_colab.ipynb)
+- **Kaggle training notebook (v1):** [`notebooks/train_kaggle.ipynb`](notebooks/train_kaggle.ipynb)
+- **Kaggle extended training notebook:** [`notebooks/train_v1_kaggle_extend.ipynb`](notebooks/train_v1_kaggle_extend.ipynb)
+- **Kaggle extended eval notebook:** [`notebooks/eval_v1_kaggle_extend.ipynb`](notebooks/eval_v1_kaggle_extend.ipynb)
 - **Report (LaTeX source):** [`report/v1/v1.tex`](report/v1/v1.tex)
 
 ## Architecture

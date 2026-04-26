@@ -410,6 +410,55 @@ preserving diagnostic content). Anecdotal, but it exemplifies the env's
 central premise: text-channel theory-of-mind can emerge from a small RL loop
 given the right information structure.
 
+\subsection{Extended-Training Corroboration}
+\label{sec:extended}
+
+A separate 4000-step GRPO run on the same environment was trained on a
+Kaggle T4 (artefacts at \url{https://huggingface.co/noanya/zombiee-v1-extended})
+and evaluated independently of the v1 step-12 eval reported above.
+Headline parity holds: survival rate $0\,\%\rightarrow 12\,\%$ at the final
+checkpoint (vs.\ $0\,\%\rightarrow 10\,\%$ for the v1 step-12 eval), and
+vote accuracy $20\,\%$ on episodes that reached the vote phase (the v1
+eval saw only a single vote fire across $n_t{=}10$, so its vote accuracy
+is effectively undefined). The extended run did not export a numeric
+eval JSON, so we restrict the report's quantitative claims (Table~\ref{tab:metrics},
+Figures~\ref{fig:bars}--\ref{fig:history}) to the v1 step-12 eval, which
+remains the canonical evaluation of record.
+
+The clearest signal from the extended run is the per-step suspicion
+trajectory in Figure~\ref{fig:infected}. The trained policy's mean
+suspicion on the true infected agent rises from chance (${\sim}0.33$ for
+a uniform 1-of-3 pick) at $t{=}1$ to near-certainty (${\sim}1.0$) by
+$t{\approx}80$, with the lift starting cleanly at the $t{=}30$ infection
+reveal and continuing past the $t{=}50$ vote. The uniform-random baseline
+hovers around $0.33$ throughout. This is direct evidence of the hidden-role
+theory-of-mind signal the env was designed to elicit, and the metric is
+not measurable on the v1 step-12 eval (which terminates too early in most
+episodes for the post-reveal portion of the trajectory to develop).
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\textwidth]{figures/infected_detection.png}
+  \caption{Per-step mean suspicion on the true infected agent across an
+           episode (extended-run eval). Trained policy (blue) climbs from
+           ${\sim}0.33$ (chance) to ${\sim}1.0$; uniform-random baseline
+           (orange) stays at chance. Vertical markers: red dashed = infection
+           reveal at $t{=}30$, green dashed = vote at $t{=}50$. Source:
+           \texttt{noanya/zombiee-v1-extended/eval\_results/infected\_detection.png}.}
+  \label{fig:infected}
+\end{figure}
+
+The $20\,\%$ vote accuracy sits below the $33\,\%$ uniform-pick floor for
+a 1-of-3 categorical choice, which is consistent with the suspicion
+trajectory: at $t{=}50$ the mean suspicion on the true infected has only
+just crossed ${\sim}0.55$, so the categorical commitment demanded by the
+single $t{=}50$ vote is premature relative to where the soft posterior
+becomes reliable (${\sim}0.9$ around $t{=}70$). A natural follow-up
+(see §\ref{sec:future}) is to delay the vote or run iterated votes so
+the categorical decision lands after the signal stabilises. The Hugging
+Face Space serves the extended-run adapter; the report's quantitative
+results are anchored on the v1 step-12 adapter for the reasons noted above.
+
 % ============================================================================
 %  6. DISCUSSION
 % ============================================================================
@@ -504,6 +553,11 @@ each one to be a 1--2 day extension rather than a redesign.
         social-deduction signal-to-noise ratio.
   \item \textbf{Iterated voting.} Vote phases at $t\in\{30,60,90\}$ instead
         of a single $t{=}50$ vote let the policy correct an early wrong vote.
+        The extended-run suspicion trajectory (§\ref{sec:extended},
+        Figure~\ref{fig:infected}) supports this directly: at $t{=}50$ the
+        soft posterior on the true infected has only just crossed ${\sim}0.55$,
+        whereas by $t{=}70{-}80$ it has reached ${\sim}1.0$. A late vote
+        (or an iterated one) would land after the signal has stabilised.
   \item \textbf{Resource scarcity \& inventory.} Distinct food / water /
         medicine resources with a 3-slot inventory force inter-agent
         coordination beyond pure broadcast.
