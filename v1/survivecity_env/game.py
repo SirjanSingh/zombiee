@@ -82,6 +82,7 @@ class EpisodeState:
     vote_phase_active: bool = False
     votes_cast: dict[int, Optional[int]] = field(default_factory=dict)
     vote_resolved: bool = False
+    vote_just_resolved: bool = False  # NEW: True only during the round when vote resolves
     lockout_target: Optional[int] = None
 
     # Broadcasts this step
@@ -452,8 +453,9 @@ def advance_step(state: EpisodeState) -> None:
     """
     state.step_count += 1
 
-    # Clear per-step broadcasts
+    # Clear per-step broadcasts and the one-shot vote flag.
     state.broadcasts = []
+    state.vote_just_resolved = False  # NEW: clears at start of every round
 
     # Check infection reveal at step 30
     check_infection_reveal(state)
@@ -465,6 +467,7 @@ def advance_step(state: EpisodeState) -> None:
     # Resolve vote after step 50 actions
     if state.step_count == 51 and not state.vote_resolved:
         resolve_vote(state)
+        state.vote_just_resolved = True  # NEW: True for exactly this round
 
     # Check terminal conditions
     check_terminal(state)

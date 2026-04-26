@@ -71,7 +71,7 @@ def vote_reward(state: EpisodeState, agent_id: int) -> float:
       voted for a healthy agent → +0.30 (successful framing)
       null vote → -0.05
     """
-    if not state.vote_resolved:
+    if not state.vote_just_resolved:  # CHANGED: was `state.vote_resolved`
         return 0.0
 
     vote = state.votes_cast.get(agent_id)

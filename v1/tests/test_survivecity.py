@@ -132,6 +132,7 @@ class TestRubric:
     def test_vote_correct(self):
         state = create_episode(seed=42)
         state.vote_resolved = True
+        state.vote_just_resolved = True  # use one-shot flag (updated for vote_reward fix)
         infected_id = state.infected_id
         healthy_id = (infected_id + 1) % 3
         state.votes_cast[healthy_id] = infected_id
@@ -141,6 +142,7 @@ class TestRubric:
     def test_vote_wrong(self):
         state = create_episode(seed=42)
         state.vote_resolved = True
+        state.vote_just_resolved = True  # use one-shot flag (updated for vote_reward fix)
         infected_id = state.infected_id
         healthy_id = (infected_id + 1) % 3
         other_healthy = (infected_id + 2) % 3
