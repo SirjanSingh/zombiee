@@ -167,9 +167,9 @@ COPY pyproject.toml    ./
 # entrypoint's `--num-generations 2`. Total compute per step (1×16×4=64
 # evaluations originally) is preserved as 2×16×2=64. Repo file on host
 # stays untouched.
-RUN sed -i 's/per_device_train_batch_size=1,/per_device_train_batch_size=2,  # dgx patch: TRL 0.15+ num_gen constraint/' training/train.py \
- && grep -q "per_device_train_batch_size=2," training/train.py \
- && echo "patched per_device_train_batch_size 1 -> 2"
+RUN sed -i 's/per_device_train_batch_size=1,/per_device_train_batch_size=4,  # dgx patch: per_device=4 unlocks num_gen=4,8,12 on 30GB/' training/train.py \
+ && grep -q "per_device_train_batch_size=4," training/train.py \
+ && echo "patched per_device_train_batch_size 1 -> 4"
 
 # In-container patch #2 (mirrors v2's training/train.py): force tqdm on +
 # add a per-step progress callback that prints clean "[progress] step N/M
@@ -304,7 +304,7 @@ case "$mode" in
       --max-steps "$MAX_STEPS"
       --save-steps "$SAVE_STEPS"
       --save-total-limit 5
-      --num-generations 2
+      --num-generations 4
       --lr "$LR"
       --temperature 0.9
       --beta 0.04
