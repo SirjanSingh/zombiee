@@ -37,7 +37,7 @@ function Hero({ state }: { state: any }) {
               transition={{ duration: 0.6 }}
               className="inline-flex items-center gap-2 chip mb-5">
               <span className="w-1.5 h-1.5 rounded-full bg-neon-lime animate-pulse" />
-              meta · pytorch · scaler — openenv hackathon · 2025
+              meta · pytorch · scaler — openenv hackathon · 2026
             </motion.div>
             <motion.h1
               initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
