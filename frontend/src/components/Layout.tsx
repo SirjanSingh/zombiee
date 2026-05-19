@@ -9,7 +9,7 @@ const NAV = [
 ];
 
 export const REPO_URL = "https://github.com/SirjanSingh/zombiee";
-export const HF_URL = "https://huggingface.co/SirjanSingh";
+export const HF_URL = "https://huggingface.co/spaces/noanya/zombiee-v1-extended";
 export const PAPER_URL = "https://github.com/SirjanSingh/zombiee/blob/master/v1/report/v1/v1.tex";
 
 export function Layout() {
